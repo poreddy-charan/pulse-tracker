@@ -82,10 +82,10 @@ main{flex:1; padding:0 1rem 6rem;}
 
 .stat-row{display:flex; gap:.6rem;}
 .stat-tile{
-  flex:1; background:var(--surface-2); border-radius:10px; padding:.7rem .6rem; text-align:center;
+  flex:1; min-width:0; background:var(--surface-2); border-radius:10px; padding:.7rem .4rem; text-align:center;
 }
-.stat-tile .n{font-family:var(--font-mono); font-size:1.25rem; font-weight:700; color:var(--accent);}
-.stat-tile .l{font-size:.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-top:.2rem;}
+.stat-tile .n{font-family:var(--font-mono); font-size:1.25rem; font-weight:700; color:var(--accent); overflow:hidden; text-overflow:ellipsis;}
+.stat-tile .l{font-size:.62rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-top:.2rem; overflow-wrap:anywhere;}
 
 .tabbar{display:flex; gap:.4rem; margin-bottom:.9rem; background:var(--surface-2); padding:.25rem; border-radius:10px;}
 .tabbar button{
@@ -184,6 +184,9 @@ main{flex:1; padding:0 1rem 6rem;}
 <script>
 /* ============================= STORAGE ============================= */
 const STORE_KEY = 'pulse_tracker_v1';
+const SESSION_KEY = 'pulse_active_session_v1';
+// Conservative limits keep browser storage bounded even after years of use.
+const DATA_LIMITS = {workoutSessions:500, cardioLogs:1000, activityLogs:1000, healthEntries:2000, dailyMetrics:2000, tasks:2000, workoutPlans:50};
 function loadState(){
   try{
     const raw = localStorage.getItem(STORE_KEY);
@@ -194,12 +197,38 @@ function loadState(){
     cardioLogs: [],
     activityLogs: [],
     healthEntries: [],
+    dailyMetrics: [],
     tasks: [],
     settings: { lastWorkoutType: null, rounds: 3 }
   };
 }
-function saveState(){ localStorage.setItem(STORE_KEY, JSON.stringify(DB)); }
+function enforceDataLimits(){
+  Object.entries(DATA_LIMITS).forEach(([key,limit])=>{
+    if(!Array.isArray(DB[key])) DB[key]=[];
+    if(DB[key].length>limit){
+      DB[key] = [...DB[key]].sort((a,b)=>(b.createdAt||Date.parse(b.date)||0)-(a.createdAt||Date.parse(a.date)||0)).slice(0,limit);
+    }
+  });
+}
+function saveState(){
+  enforceDataLimits();
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(DB)); return true; }
+  catch(e){ alert('Pulse could not save because browser storage is full. Export a backup and remove older records.'); return false; }
+}
 let DB = loadState();
+function loadSession(){
+  try{
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  }catch(e){ return null; }
+}
+function saveSession(){
+  try{
+    if(!session) localStorage.removeItem(SESSION_KEY);
+    else localStorage.setItem(SESSION_KEY, JSON.stringify({...session, restTimerId:null}));
+  }catch(e){ /* Main records still remain safe if a temporary session cannot be persisted. */ }
+}
+enforceDataLimits();
 
 /* ============================= EXERCISE DATA ============================= */
 const CORE_FINISHER_A = { name:'Plank', target:'Core', cues:['Forearms down, elbows under shoulders','Squeeze glutes, ribs pulled down','Hold a straight line head to heel','Breathe steadily, don\'t sag the hips'] };
@@ -237,15 +266,33 @@ const WORKOUT_B = {
   ],
   core: CORE_FINISHER_B
 };
-function nextWorkoutType(){
-  const last = DB.settings.lastWorkoutType;
-  return last === 'A' ? WORKOUT_B : WORKOUT_A;
+function ensureModernData(){
+  if(!Array.isArray(DB.dailyMetrics)) DB.dailyMetrics=[];
+  if(!Array.isArray(DB.workoutPlans) || !DB.workoutPlans.length){
+    DB.workoutPlans=[WORKOUT_A,WORKOUT_B].map(w=>({
+      id:'plan-'+w.key, name:w.label, key:w.key, builtIn:true,
+      stations:w.stations.map(s=>({...s,cues:[...s.cues]})), core:{...w.core,cues:[...w.core.cues]}
+    }));
+  }
+  DB.workoutPlans.forEach((p,i)=>{
+    p.id=p.id||uid(); p.name=p.name||p.label||`Workout ${i+1}`;
+    p.stations=Array.isArray(p.stations)?p.stations:[];
+    p.core=p.core||{name:'Plank',target:'Core',cues:[]};
+  });
+  DB.settings={lastWorkoutType:null,rounds:3,...DB.settings};
 }
-function workoutByKey(k){ return k==='A' ? WORKOUT_A : WORKOUT_B; }
+ensureModernData();
+function nextWorkoutType(){
+  const plans=DB.workoutPlans.filter(p=>p.stations.length);
+  if(!plans.length) return null;
+  const idx=plans.findIndex(p=>p.id===DB.settings.lastPlanId);
+  return plans[(idx+1+plans.length)%plans.length];
+}
+function workoutByKey(k){ return DB.workoutPlans.find(p=>p.id===k || p.key===k) || WORKOUT_A; }
 
 /* ============================= ROUTER STATE ============================= */
 let view = { screen:'home' };
-let session = null; // live workout session state
+let session = loadSession(); // live workout session state, restored after reloads
 let modal = null;   // {type,...}
 
 function go(v){ view = v; render(); }
@@ -266,6 +313,34 @@ function fmtDateTime(ts){
 function isOverdue(t){ return t.status==='open' && t.date && t.date < todayISO(); }
 function esc(s){ return (s||'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function weekAgo(){ const d=new Date(); d.setDate(d.getDate()-7); return d.toISOString().slice(0,10); }
+function numberNear(text, labels){
+  const lines=text.split(/\n/).map(x=>x.trim()).filter(Boolean);
+  for(const label of labels){
+    const i=lines.findIndex(x=>x.toLowerCase().includes(label));
+    if(i>=0){
+      const area=[lines[i],lines[i+1]||'',lines[i-1]||''].join(' ');
+      const nums=area.match(/\d[\d,]*(?:\.\d+)?/g);
+      if(nums?.length) return parseFloat(nums[0].replace(/,/g,''));
+    }
+  }
+  return null;
+}
+function loadOcrEngine(){
+  if(window.Tesseract) return Promise.resolve(window.Tesseract);
+  return new Promise((resolve,reject)=>{
+    const script=document.createElement('script');
+    script.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+    script.onload=()=>resolve(window.Tesseract); script.onerror=()=>reject(new Error('OCR unavailable'));
+    document.head.appendChild(script);
+  });
+}
+function sparkline(values,color='var(--accent)'){
+  const nums=values.map(Number).filter(Number.isFinite);
+  if(nums.length<2) return '';
+  const min=Math.min(...nums), max=Math.max(...nums), range=max-min||1;
+  const points=nums.map((v,i)=>`${(i/(nums.length-1))*100},${38-((v-min)/range)*32}`).join(' ');
+  return `<svg viewBox="0 0 100 42" preserveAspectRatio="none" style="width:100%;height:4.5rem;display:block" role="img" aria-label="Recent trend"><polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
+}
 
 /* ============================= RENDER SHELL ============================= */
 function render(){
@@ -281,6 +356,7 @@ function screenTitle(){
     'fitness-session':['Live Session',''],
     health:['Health',''],
     planner:['Day Planner',''],
+    data:['Data & Backup',''],
   };
   return map[view.screen] || ['Pulse',''];
 }
@@ -294,6 +370,7 @@ function renderScreen(){
   else if(view.screen==='fitness') body = renderFitness();
   else if(view.screen==='health') body = renderHealth();
   else if(view.screen==='planner') body = renderPlanner();
+  else if(view.screen==='data') body = renderData();
   return `
   <div class="topbar">
     ${showBack ? `<button class="back-btn" data-act="back">‹</button>` : ''}
@@ -306,6 +383,7 @@ function backTarget(){
   if(view.screen==='fitness') return {screen:'home'};
   if(view.screen==='health') return {screen:'home'};
   if(view.screen==='planner') return {screen:'home'};
+  if(view.screen==='data') return {screen:'home'};
   return {screen:'home'};
 }
 
@@ -316,6 +394,7 @@ function renderHome(){
   const openTasks = DB.tasks.filter(t=>t.status==='open').length;
   const overdueTasks = DB.tasks.filter(isOverdue).length;
   return `
+  ${session?`<button class="btn primary" data-act="resume-session" style="margin-bottom:1rem;">Resume Workout ${session.type}</button>`:''}
   <div class="stat-row" style="margin-bottom:1rem;">
     <div class="stat-tile"><div class="n">${thisWeek}</div><div class="l">Sessions/wk</div></div>
     <div class="stat-tile"><div class="n">${totalSessions}</div><div class="l">Total sessions</div></div>
@@ -336,21 +415,50 @@ function renderHome(){
     <div class="body"><div class="t">Day Planner</div><div class="s">${overdueTasks?overdueTasks+' overdue · ':''}${openTasks} open task${openTasks===1?'':'s'}</div></div>
     <div class="chev">›</div>
   </div>
+  <div class="hero-tile pressable" data-nav="data">
+    <div class="ico" style="background:#24354a; color:#9fc7ff;">💾</div>
+    <div class="body"><div class="t">Data & Backup</div><div class="s">Export or restore your personal records</div></div>
+    <div class="chev">›</div>
+  </div>
   `;
+}
+
+/* ============================= DATA ============================= */
+function renderData(){
+  const counts = [DB.workoutSessions.length, DB.cardioLogs.length, DB.activityLogs.length, DB.healthEntries.length, DB.dailyMetrics.length, DB.tasks.length];
+  const storageKB = Math.ceil(new Blob([JSON.stringify(DB)]).size/1024);
+  return `
+  <div class="card">
+    <div style="font-weight:700; margin-bottom:.35rem;">Your data stays on this device</div>
+    <div style="font-size:.82rem; color:var(--muted); line-height:1.5;">A browser reset can erase it. Export a backup regularly and keep that file somewhere private.</div>
+    <div class="stat-row" style="margin-top:1rem;">
+      <div class="stat-tile"><div class="n">${counts.reduce((a,b)=>a+b,0)}</div><div class="l">Records</div></div>
+      <div class="stat-tile"><div class="n">${DB.workoutSessions.length}</div><div class="l">Workouts</div></div>
+      <div class="stat-tile"><div class="n">${DB.healthEntries.length}</div><div class="l">Health</div></div>
+    </div>
+    <div style="font-size:.75rem; color:var(--muted); margin-top:.8rem; text-align:center;">Currently using about ${storageKB.toLocaleString()} KB</div>
+  </div>
+  <button class="btn primary" data-act="export-data">Export backup</button>
+  <div style="height:.65rem;"></div>
+  <button class="btn" data-act="choose-import">Restore from backup</button>
+  <input id="importFile" type="file" accept="application/json,.json" hidden>
+  <p style="font-size:.75rem; color:var(--muted); line-height:1.45;">Restoring replaces the records currently stored in this browser. Backup files may contain sensitive health information. Pulse keeps bounded history: 500 workouts, 1,000 cardio sessions, 1,000 activities, 2,000 health entries, and 2,000 tasks.</p>`;
 }
 
 /* ============================= FITNESS ============================= */
 let fitnessTab = 'workout';
 function renderFitness(){
-  const tabs = ['workout','cardio','activities'];
-  const labels = {workout:'Workout', cardio:'Cardio', activities:'Activities'};
+  const tabs = ['workout','plans','cardio','activities','progress'];
+  const labels = {workout:'Start', plans:'Plans', cardio:'Cardio', activities:'Activity',progress:'Progress'};
   return `
   <div class="tabbar">
     ${tabs.map(t=>`<button data-fit-tab="${t}" class="${fitnessTab===t?'active':''}">${labels[t]}</button>`).join('')}
   </div>
   ${fitnessTab==='workout' ? renderWorkoutTab() : ''}
+  ${fitnessTab==='plans' ? renderPlansTab() : ''}
   ${fitnessTab==='cardio' ? renderCardioTab() : ''}
   ${fitnessTab==='activities' ? renderActivitiesTab() : ''}
+  ${fitnessTab==='progress' ? renderFitnessProgress() : ''}
   `;
 }
 
@@ -360,21 +468,22 @@ function renderWorkoutTab(){
   return `
   <div class="card">
     <div style="font-size:.78rem; color:var(--muted); margin-bottom:.3rem;">Up next</div>
-    <div style="font-size:1.3rem; font-weight:700; margin-bottom:.2rem;">${next.label}</div>
-    <div style="font-size:.8rem; color:var(--muted); margin-bottom:.9rem;">10 stations + core finisher · alternates each session</div>
+    ${next?`<div style="font-size:1.3rem; font-weight:700; margin-bottom:.2rem;">${esc(next.name)}</div>
+    <div style="font-size:.8rem; color:var(--muted); margin-bottom:.9rem;">${next.stations.length} exercises + ${esc(next.core.name)} · plans rotate automatically</div>
+    <div class="field"><label>Workout plan</label><select id="planSelect">${DB.workoutPlans.filter(p=>p.stations.length).map(p=>`<option value="${p.id}" ${p.id===next.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>
     <div class="field" style="margin-bottom:.6rem;">
       <label>Rounds</label>
       <select id="roundsSelect">
         ${[1,2,3,4].map(n=>`<option value="${n}" ${n===DB.settings.rounds?'selected':''}>${n} round${n>1?'s':''}</option>`).join('')}
       </select>
     </div>
-    <button class="btn primary" data-act="start-session">Start ${next.label}</button>
+    <button class="btn primary" data-act="start-session">Start workout</button>`:`<div class="empty"><p>Create a workout plan before starting.</p></div><button class="btn primary" data-fit-tab="plans">Create a plan</button>`}
   </div>
   <div class="section-label">History</div>
   ${recent.length===0 ? emptyBlock('💪','No sessions yet','Start your first circuit above.') : recent.map(s=>`
     <div class="card list-row" style="margin-bottom:.5rem;">
       <div class="main">
-        <div class="title">Workout ${s.type} ${s.partial?'· partial':''}</div>
+        <div class="title">${esc(s.planName||('Workout '+s.type))} ${s.partial?'· partial':''}</div>
         <div class="meta">${fmtDate(s.date)} · ${s.rounds} round${s.rounds>1?'s':''} · ${Math.round(s.durationSec/60)} min${s.rpe?' · RPE '+s.rpe:''}</div>
       </div>
       <div class="val">${s.stationLogs ? s.stationLogs.filter(x=>x.weight!=null).length : 0}/${s.stationLogs?s.stationLogs.length:0}</div>
@@ -383,12 +492,31 @@ function renderWorkoutTab(){
   `;
 }
 
+function renderPlansTab(){
+  return `<button class="btn primary" data-act="add-plan" style="margin-bottom:1rem;">+ Create workout plan</button>
+  ${DB.workoutPlans.length===0?emptyBlock('🏋️','No workout plans','Create a plan and add your exercises.'):DB.workoutPlans.map(p=>`
+    <div class="card" data-open-plan="${p.id}">
+      <div class="list-row" style="border:none;padding:0"><div class="main"><div class="title">${esc(p.name)}</div><div class="meta">${p.stations.length} exercises · Core: ${esc(p.core?.name||'None')}</div></div><div class="chev">›</div></div>
+    </div>`).join('')}`;
+}
+
+function renderFitnessProgress(){
+  const recent=DB.workoutSessions.filter(s=>s.date>=weekAgo()).length;
+  const cardioMin=DB.cardioLogs.filter(x=>x.date>=weekAgo()).reduce((n,x)=>n+(x.duration||0),0);
+  const totalMin=DB.workoutSessions.reduce((n,x)=>n+Math.round((x.durationSec||0)/60),0);
+  const weights={};
+  [...DB.workoutSessions].sort((a,b)=>b.startedAt-a.startedAt).forEach(s=>(s.stationLogs||[]).forEach(x=>{if(weights[x.name]==null&&typeof x.weight==='number')weights[x.name]=x.weight;}));
+  return `<div class="stat-row"><div class="stat-tile"><div class="n">${recent}</div><div class="l">Workouts / 7d</div></div><div class="stat-tile"><div class="n">${Math.round(cardioMin)}</div><div class="l">Cardio min / 7d</div></div><div class="stat-tile"><div class="n">${totalMin}</div><div class="l">Total min</div></div></div>
+  <div class="section-label">Latest working weights</div>
+  <div class="card">${Object.keys(weights).length?Object.entries(weights).slice(0,20).map(([name,w])=>`<div class="list-row"><div class="main"><div class="title">${esc(name)}</div></div><div class="val">${w} kg</div></div>`).join(''):`<div class="empty"><p>Complete weighted exercises to see progress.</p></div>`}</div>`;
+}
+
 function renderCardioTab(){
   const logs = [...DB.cardioLogs].sort((a,b)=>b.createdAt-a.createdAt);
   return `
   <button class="btn primary" data-act="add-cardio" style="margin-bottom:1rem;">+ Log cardio session</button>
   ${logs.length===0 ? emptyBlock('🚶','No cardio logged yet','Log a walk, run, or ride to start tracking trends.') : logs.map(l=>`
-    <div class="card list-row" style="margin-bottom:.5rem;">
+    <div class="card list-row" style="margin-bottom:.5rem;" data-open-cardio="${l.id}">
       <div class="main">
         <div class="title">${esc(l.type)}</div>
         <div class="meta">${fmtDate(l.date)}${l.duration?' · '+l.duration+' min':''}${l.hrAvg?' · avg HR '+l.hrAvg:''}${l.steps?' · '+l.steps+' steps':''}</div>
@@ -404,7 +532,7 @@ function renderActivitiesTab(){
   return `
   <button class="btn primary" data-act="add-activity" style="margin-bottom:1rem;">+ Log activity</button>
   ${logs.length===0 ? emptyBlock('🌱','No activities logged yet','Gardening, housework, yoga — anything active counts.') : logs.map(l=>`
-    <div class="card list-row" style="margin-bottom:.5rem;">
+    <div class="card list-row" style="margin-bottom:.5rem;" data-open-activity="${l.id}">
       <div class="main">
         <div class="title">${esc(l.type)}</div>
         <div class="meta">${fmtDate(l.date)}${l.duration?' · '+l.duration+' min':''}</div>
@@ -420,7 +548,9 @@ function emptyBlock(emoji,title,sub){
 
 /* ---- live session ---- */
 function startSession(){
-  const wtype = nextWorkoutType();
+  const selectedId=document.getElementById('planSelect')?.value;
+  const wtype = DB.workoutPlans.find(p=>p.id===selectedId) || nextWorkoutType();
+  if(!wtype || !wtype.stations.length) return;
   const rounds = parseInt(document.getElementById('roundsSelect')?.value || DB.settings.rounds || 3);
   DB.settings.rounds = rounds;
   const plan = [];
@@ -428,18 +558,23 @@ function startSession(){
     wtype.stations.forEach((st,i)=> plan.push({round:r, stationIndex:i, ...st}));
   }
   session = {
-    type: wtype.key,
+    type: wtype.key||wtype.id,
+    planId:wtype.id,
+    planName:wtype.name,
     rounds,
     plan,
     core: wtype.core,
     idx: 0,
-    stationLogs: plan.map(()=>({weight:null})),
+    stationLogs: plan.map(p=>({weight:null,reps:p.reps||null})),
     coreLog: {done:false},
     phase: 'exercise', // exercise | rest-station | rest-round | core | rpe
     restRemaining: 0,
     restTimerId: null,
     startedAt: Date.now(),
+    restExercise:Math.max(0,Math.min(300,wtype.restExercise??20)),
+    restRound:Math.max(0,Math.min(600,wtype.restRound??75)),
   };
+  saveSession();
   go({screen:'fitness-session'});
 }
 
@@ -453,23 +588,28 @@ function markStationComplete(weight){
     session.phase = 'core';
   } else if(isLastInRound){
     session.phase = 'rest-round';
-    startRestTimer(75);
+    startRestTimer(session.restRound);
   } else {
     session.phase = 'rest-station';
-    startRestTimer(20);
+    startRestTimer(session.restExercise);
   }
+  saveSession();
   render();
 }
 
 function startRestTimer(seconds){
   session.restRemaining = seconds;
+  session.restEndsAt = Date.now() + seconds*1000;
+  saveSession();
   clearInterval(session.restTimerId);
   session.restTimerId = setInterval(()=>{
-    session.restRemaining--;
+    session.restRemaining = Math.max(0, Math.ceil((session.restEndsAt-Date.now())/1000));
     if(session.restRemaining<=0){
       clearInterval(session.restTimerId);
       session.idx++;
       session.phase = 'exercise';
+      session.restEndsAt = null;
+      saveSession();
     }
     render();
   },1000);
@@ -479,31 +619,37 @@ function skipRest(){
   clearInterval(session.restTimerId);
   session.idx++;
   session.phase='exercise';
+  session.restEndsAt = null;
+  saveSession();
   render();
 }
 
 function sessionBack(){
-  if(session.phase==='core'){ session.phase='exercise'; render(); return; }
+  if(session.phase==='core'){ session.phase='exercise'; saveSession(); render(); return; }
   if(session.idx===0) return;
   clearInterval(session.restTimerId);
   session.idx--;
   session.phase='exercise';
+  session.restEndsAt = null;
+  saveSession();
   render();
 }
 
-function finishCore(){ session.phase='rpe'; render(); }
+function finishCore(){ session.phase='rpe'; saveSession(); render(); }
 
 function finishSession(rpe, partial){
   const durationSec = Math.round((Date.now()-session.startedAt)/1000);
   DB.workoutSessions.push({
     id: uid(), type: session.type, date: todayISO(), startedAt: session.startedAt,
     durationSec, rounds: session.rounds, rpe: rpe||null, partial: !!partial,
-    stationLogs: session.plan.map((p,i)=>({name:p.name, round:p.round, weight:session.stationLogs[i].weight})),
+    stationLogs: session.plan.map((p,i)=>({name:p.name, round:p.round, weight:session.stationLogs[i].weight, reps:session.stationLogs[i].reps})),
     coreCompleted: session.coreLog.done,
   });
   DB.settings.lastWorkoutType = session.type;
+  DB.settings.lastPlanId = session.planId;
   saveState();
   session = null;
+  saveSession();
   go({screen:'fitness'});
 }
 
@@ -568,6 +714,7 @@ function renderSessionScreen(){
   // exercise phase
   const item = currentPlanItem();
   const w = session.stationLogs[session.idx].weight;
+  const previous=[...DB.workoutSessions].sort((a,b)=>b.startedAt-a.startedAt).flatMap(s=>s.stationLogs||[]).find(x=>x.name===item.name&&typeof x.weight==='number');
   return `
   <div class="topbar"><button class="back-btn" data-act="session-back">‹</button><h1>Round ${item.round}/${session.rounds}</h1></div>
   <main>
@@ -575,6 +722,7 @@ function renderSessionScreen(){
       <div class="prog">STATION ${item.stationIndex+1} / 10</div>
       <div class="name">${esc(item.name)}</div>
       <div class="target">${esc(item.target)}</div>
+      ${item.reps?`<div class="target">Target: ${esc(item.reps)} reps</div>`:''}
     </div>
     <div class="card">
       <ol class="cues">${item.cues.map(x=>`<li>${esc(x)}</li>`).join('')}</ol>
@@ -582,6 +730,8 @@ function renderSessionScreen(){
     <a class="link-row" href="https://www.youtube.com/results?search_query=${encodeURIComponent(item.name+' proper form')}" target="_blank" rel="noopener">▶ Search a demo on YouTube</a>
     <div style="height:1rem;"></div>
     <button class="weight-picker-btn ${w!=null?'set':''}" data-act="open-weight">${w==null ? 'Tap to set weight' : (w==='BW' ? 'Bodyweight' : w+' kg')}</button>
+    ${previous?`<div style="text-align:center;color:var(--muted);font-size:.75rem;margin-top:.35rem">Previous: ${previous.weight} kg${previous.reps?' × '+previous.reps:''}</div>`:''}
+    <div class="field" style="margin-top:.8rem"><label>Reps completed</label><input type="number" id="sessionReps" inputmode="numeric" min="0" max="999" value="${session.stationLogs[session.idx].reps??''}"></div>
     <div style="height:1rem;"></div>
     <button class="btn primary" data-act="mark-complete" ${w==null?'disabled':''}>Mark Complete</button>
     <div style="height:.6rem;"></div>
@@ -591,14 +741,16 @@ function renderSessionScreen(){
 
 /* ============================= HEALTH ============================= */
 let healthCategory = 'all';
-const HEALTH_CATS = ['vitals','medication','appointment','symptom','note'];
-const CAT_LABEL = {vitals:'Vitals', medication:'Medication', appointment:'Appointment', symptom:'Symptom', note:'Note'};
+const HEALTH_CATS = ['vitals','medication','appointment','symptom','lab','diagnosis','procedure','immunization','allergy','note'];
+const CAT_LABEL = {vitals:'Vitals',medication:'Medication',appointment:'Appointment',symptom:'Symptom',lab:'Lab result',diagnosis:'Diagnosis',procedure:'Procedure',immunization:'Immunization',allergy:'Allergy',note:'Note'};
 
 function renderHealth(){
   const filtered = healthCategory==='all' ? DB.healthEntries : DB.healthEntries.filter(e=>e.category===healthCategory);
   const sorted = [...filtered].sort((a,b)=> (b.date||'').localeCompare(a.date||''));
   return `
-  <button class="btn primary" data-act="add-health" style="margin-bottom:1rem;">+ Add entry</button>
+  <div class="btn-row" style="margin-bottom:.6rem"><button class="btn primary" data-act="add-health">+ Health history</button><button class="btn" data-act="add-metric">+ Daily metrics</button></div>
+  <button class="btn ghost" data-act="scan-health" style="margin-bottom:1rem;">📷 Import watch screenshot</button>
+  ${renderMetricSummary()}
   <div class="tabbar" style="flex-wrap:wrap;">
     <button data-health-cat="all" class="${healthCategory==='all'?'active':''}">All</button>
     ${HEALTH_CATS.map(c=>`<button data-health-cat="${c}" class="${healthCategory===c?'active':''}">${CAT_LABEL[c]}</button>`).join('')}
@@ -615,6 +767,19 @@ function renderHealth(){
     </div>
   `).join('')}
   `;
+}
+
+function renderMetricSummary(){
+  const list=[...DB.dailyMetrics].sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  if(!list.length) return '';
+  const latest=list[0];
+  const seven=list.filter(x=>x.date>=weekAgo());
+  const steps=seven.reduce((n,x)=>n+(x.steps||0),0);
+  return `<div class="section-label">Daily wellness</div>
+    <div class="stat-row" style="margin-bottom:.7rem"><div class="stat-tile"><div class="n">${latest.steps?latest.steps.toLocaleString():'—'}</div><div class="l">Latest steps</div></div><div class="stat-tile"><div class="n">${steps?Math.round(steps/Math.max(seven.length,1)).toLocaleString():'—'}</div><div class="l">7-day avg</div></div><div class="stat-tile"><div class="n">${latest.restingHr||latest.heartRate||'—'}</div><div class="l">Latest HR</div></div></div>
+    ${sparkline(list.slice(0,14).reverse().map(x=>x.steps).filter(x=>x!=null))}
+    ${list.slice(0,7).map(x=>`<div class="card" data-open-metric="${x.id}" style="margin-bottom:.5rem"><div class="list-row" style="border:0;padding:0"><div class="main"><div class="title">${fmtDate(x.date)}</div><div class="meta">${x.steps?x.steps.toLocaleString()+' steps':''}${x.calories?' · '+x.calories+' kcal':''}${x.sleepHours?' · '+x.sleepHours+'h sleep':''}</div></div><div class="val">${x.distanceKm?x.distanceKm+' km':''}</div></div></div>`).join('')}
+    <div class="section-label">Health history</div>`;
 }
 
 /* ============================= PLANNER ============================= */
@@ -660,6 +825,8 @@ function renderModal(){
   else if(m.type==='view-health') inner = renderHealthDetailModal();
   else if(m.type==='add-task') inner = renderTaskModal();
   else if(m.type==='view-task') inner = renderTaskDetailModal();
+  else if(m.type==='edit-plan') inner = renderPlanModal();
+  else if(m.type==='add-metric') inner = renderMetricModal();
   else if(m.type==='confirm-end-session') inner = renderConfirmEndSession();
   return `<div class="modal-backdrop" data-act="close-modal-backdrop"><div class="modal" data-stop="1">
     <div class="modal-handle"></div>${inner}
@@ -678,58 +845,96 @@ function renderWeightPickerModal(){
   `;
 }
 
+function renderPlanModal(){
+  const p=modal.id?DB.workoutPlans.find(x=>x.id===modal.id):null;
+  const lines=(p?.stations||[]).map(s=>`${s.name} | ${s.target||''} | ${(s.cues||[]).join('; ')} | ${s.reps||''}`).join('\n');
+  return `<h2>${p?'Edit':'Create'} workout plan</h2>
+    <div class="field"><label>Plan name</label><input id="pName" value="${esc(p?.name||'')}" placeholder="e.g. Home Strength"></div>
+    <div class="field"><label>Exercises — one per line</label><textarea id="pExercises" style="min-height:12rem" placeholder="Goblet Squat | Legs | Chest tall; knees track toes | 12">${esc(lines)}</textarea>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:.3rem">Format: Exercise | Target area | Cue; another cue | Target reps</div></div>
+    <div class="btn-row"><div class="field" style="flex:1"><label>Rest between exercises</label><input type="number" id="pRestExercise" value="${p?.restExercise??20}"></div><div class="field" style="flex:1"><label>Rest between rounds</label><input type="number" id="pRestRound" value="${p?.restRound??75}"></div></div>
+    <div class="field"><label>Core finisher</label><input id="pCore" value="${esc(p?.core?.name||'Plank')}"></div>
+    <div class="field"><label>Core coaching cues</label><textarea id="pCoreCues">${esc((p?.core?.cues||[]).join('; '))}</textarea></div>
+    <button class="btn primary" data-act="save-plan" data-id="${p?.id||''}">Save plan</button>
+    ${p?`<div style="height:.5rem"></div><button class="btn danger" data-act="delete-plan" data-id="${p.id}">Delete plan</button>`:''}
+    <div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Cancel</button>`;
+}
+
 function renderCardioModal(){
+  const x = modal.id ? DB.cardioLogs.find(v=>v.id===modal.id) : null;
   return `
-  <h2>Log cardio</h2>
+  <h2>${x?'Edit':'Log'} cardio</h2>
   <div class="field"><label>Type</label>
     <select id="cType">
-      ${['Walking','Running','Jogging','Cycling','Stairs','Swimming','Other'].map(t=>`<option>${t}</option>`).join('')}
+      ${['Walking','Running','Jogging','Cycling','Stairs','Swimming','Other'].map(t=>`<option ${x?.type===t?'selected':''}>${t}</option>`).join('')}
     </select>
   </div>
-  <div class="field"><label>Date</label><input type="date" id="cDate" value="${todayISO()}"></div>
-  <div class="field"><label>Duration (min)</label><input type="number" id="cDuration" inputmode="numeric"></div>
-  <div class="field"><label>Calories</label><input type="number" id="cCalories" inputmode="numeric"></div>
-  <div class="field"><label>Avg heart rate</label><input type="number" id="cHrAvg" inputmode="numeric"></div>
-  <div class="field"><label>Max heart rate</label><input type="number" id="cHrMax" inputmode="numeric"></div>
-  <div class="field"><label>Steps</label><input type="number" id="cSteps" inputmode="numeric"></div>
-  <div class="field"><label>VO2max</label><input type="number" id="cVo2" inputmode="numeric"></div>
-  <button class="btn primary" data-act="save-cardio">Save</button>
+  <div class="field"><label>Date</label><input type="date" id="cDate" value="${x?.date||todayISO()}"></div>
+  <div class="field"><label>Duration (min)</label><input type="number" id="cDuration" inputmode="numeric" value="${x?.duration??''}"></div>
+  <div class="field"><label>Calories</label><input type="number" id="cCalories" inputmode="numeric" value="${x?.calories??''}"></div>
+  <div class="field"><label>Avg heart rate</label><input type="number" id="cHrAvg" inputmode="numeric" value="${x?.hrAvg??''}"></div>
+  <div class="field"><label>Max heart rate</label><input type="number" id="cHrMax" inputmode="numeric" value="${x?.hrMax??''}"></div>
+  <div class="field"><label>Steps</label><input type="number" id="cSteps" inputmode="numeric" value="${x?.steps??''}"></div>
+  <div class="field"><label>VO2max</label><input type="number" id="cVo2" inputmode="decimal" value="${x?.vo2max??''}"></div>
+  <button class="btn primary" data-act="save-cardio" data-id="${x?.id||''}">Save</button>
+  ${x?`<div style="height:.5rem;"></div><button class="btn danger" data-delete-record="cardio" data-id="${x.id}">Delete</button>`:''}
   <div style="height:.5rem;"></div>
   <button class="btn ghost" data-act="close-modal">Cancel</button>
   `;
 }
 
 function renderActivityModal(){
+  const x = modal.id ? DB.activityLogs.find(v=>v.id===modal.id) : null;
   return `
-  <h2>Log activity</h2>
+  <h2>${x?'Edit':'Log'} activity</h2>
   <div class="field"><label>Type</label>
-    <input list="actTypes" id="aType" placeholder="e.g. Gardening">
+    <input list="actTypes" id="aType" placeholder="e.g. Gardening" value="${esc(x?.type||'')}">
     <datalist id="actTypes">${['Gardening','Housework','Yoga','Stretching','Hiking'].map(t=>`<option value="${t}">`).join('')}</datalist>
   </div>
-  <div class="field"><label>Date</label><input type="date" id="aDate" value="${todayISO()}"></div>
-  <div class="field"><label>Duration (min)</label><input type="number" id="aDuration" inputmode="numeric"></div>
-  <div class="field"><label>Notes</label><textarea id="aNotes"></textarea></div>
-  <button class="btn primary" data-act="save-activity">Save</button>
+  <div class="field"><label>Date</label><input type="date" id="aDate" value="${x?.date||todayISO()}"></div>
+  <div class="field"><label>Duration (min)</label><input type="number" id="aDuration" inputmode="numeric" value="${x?.duration??''}"></div>
+  <div class="field"><label>Notes</label><textarea id="aNotes">${esc(x?.notes||'')}</textarea></div>
+  <button class="btn primary" data-act="save-activity" data-id="${x?.id||''}">Save</button>
+  ${x?`<div style="height:.5rem;"></div><button class="btn danger" data-delete-record="activity" data-id="${x.id}">Delete</button>`:''}
   <div style="height:.5rem;"></div>
   <button class="btn ghost" data-act="close-modal">Cancel</button>
   `;
 }
 
 function renderHealthModal(){
+  const x = modal.id ? DB.healthEntries.find(v=>v.id===modal.id) : null;
   return `
-  <h2>Add health entry</h2>
+  <h2>${x?'Edit':'Add'} health entry</h2>
   <div class="field"><label>Category</label>
-    <select id="hCat">${HEALTH_CATS.map(c=>`<option value="${c}">${CAT_LABEL[c]}</option>`).join('')}</select>
+    <select id="hCat">${HEALTH_CATS.map(c=>`<option value="${c}" ${x?.category===c?'selected':''}>${CAT_LABEL[c]}</option>`).join('')}</select>
   </div>
-  <div class="field"><label>Label</label><input id="hLabel" placeholder="e.g. Blood pressure, Ibuprofen, Dentist"></div>
-  <div class="field"><label>Value</label><input id="hValue" placeholder="e.g. 120/80"></div>
-  <div class="field"><label>Unit</label><input id="hUnit" placeholder="e.g. mmHg"></div>
-  <div class="field"><label>Date</label><input type="date" id="hDate" value="${todayISO()}"></div>
-  <div class="field"><label>Notes</label><textarea id="hNotes"></textarea></div>
-  <button class="btn primary" data-act="save-health">Save</button>
+  <div class="field"><label>Label</label><input id="hLabel" placeholder="e.g. Blood pressure, Ibuprofen, Dentist" value="${esc(x?.label||'')}"></div>
+  <div class="field"><label>Value</label><input id="hValue" placeholder="e.g. 120/80" value="${esc(x?.value||'')}"></div>
+  <div class="field"><label>Unit</label><input id="hUnit" placeholder="e.g. mmHg" value="${esc(x?.unit||'')}"></div>
+  <div class="field"><label>Date</label><input type="date" id="hDate" value="${x?.date||todayISO()}"></div>
+  <div class="field"><label>Notes</label><textarea id="hNotes">${esc(x?.notes||'')}</textarea></div>
+  <button class="btn primary" data-act="save-health" data-id="${x?.id||''}">Save</button>
   <div style="height:.5rem;"></div>
   <button class="btn ghost" data-act="close-modal">Cancel</button>
   `;
+}
+
+function renderMetricModal(){
+  const x=modal.id?DB.dailyMetrics.find(v=>v.id===modal.id):null;
+  return `<h2>${x?'Edit daily metrics':modal.scan?'Import watch screenshot':'Log daily metrics'}</h2>
+    ${modal.scan?`<div class="card"><div class="field"><label>Watch or health-app screenshot</label><input type="file" id="metricImage" accept="image/*"></div><button class="btn" data-act="run-ocr">Extract numbers</button><div id="ocrStatus" style="font-size:.75rem;color:var(--muted);margin-top:.5rem">The image is processed in memory and is never saved by Pulse.</div></div>`:''}
+    <div class="field"><label>Date</label><input type="date" id="mDate" value="${x?.date||todayISO()}"></div>
+    <div class="field"><label>Steps</label><input type="number" id="mSteps" inputmode="numeric" value="${x?.steps??''}"></div>
+    <div class="field"><label>Distance (km)</label><input type="number" step="0.01" id="mDistance" inputmode="decimal" value="${x?.distanceKm??''}"></div>
+    <div class="field"><label>Active calories</label><input type="number" id="mCalories" inputmode="numeric" value="${x?.calories??''}"></div>
+    <div class="field"><label>Average heart rate</label><input type="number" id="mHeart" inputmode="numeric" value="${x?.heartRate??''}"></div>
+    <div class="field"><label>Resting heart rate</label><input type="number" id="mResting" inputmode="numeric" value="${x?.restingHr??''}"></div>
+    <div class="field"><label>Sleep (hours)</label><input type="number" step="0.1" id="mSleep" inputmode="decimal" value="${x?.sleepHours??''}"></div>
+    <div class="field"><label>Weight (kg)</label><input type="number" step="0.1" id="mWeight" inputmode="decimal" value="${x?.weightKg??''}"></div>
+    <div class="field"><label>Notes</label><textarea id="mNotes" maxlength="500">${esc(x?.notes||'')}</textarea></div>
+    <button class="btn primary" data-act="save-metric" data-id="${x?.id||''}">Save metrics</button>
+    ${x?`<div style="height:.5rem"></div><button class="btn danger" data-delete-record="metric" data-id="${x.id}">Delete</button>`:''}
+    <div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Cancel</button>`;
 }
 
 function renderHealthDetailModal(){
@@ -742,6 +947,8 @@ function renderHealthDetailModal(){
     ${e.value?`<div style="font-family:var(--font-mono); font-size:1.4rem; font-weight:700; color:var(--accent); margin:.5rem 0;">${esc(e.value)} ${esc(e.unit||'')}</div>`:''}
     ${e.notes?`<div style="font-size:.85rem; margin-top:.4rem;">${esc(e.notes)}</div>`:''}
   </div>
+  <button class="btn primary" data-act="edit-health" data-id="${e.id}">Edit entry</button>
+  <div style="height:.5rem;"></div>
   <button class="btn danger" data-act="delete-health" data-id="${e.id}">Delete entry</button>
   <div style="height:.5rem;"></div>
   <button class="btn ghost" data-act="close-modal">Close</button>
@@ -749,14 +956,15 @@ function renderHealthDetailModal(){
 }
 
 function renderTaskModal(){
+  const x = modal.id ? DB.tasks.find(v=>v.id===modal.id) : null;
   return `
-  <h2>Add task</h2>
-  <div class="field"><label>Title</label><input id="tTitle" placeholder="e.g. Call the pharmacy"></div>
-  <div class="field"><label>Date</label><input type="date" id="tDate" value="${todayISO()}"></div>
-  <div class="field"><label>Time (optional)</label><input type="time" id="tTime"></div>
-  <div class="field"><label>Location (optional)</label><input id="tLocation"></div>
-  <div class="field"><label>Notes</label><textarea id="tNotes"></textarea></div>
-  <button class="btn primary" data-act="save-task">Save</button>
+  <h2>${x?'Edit':'Add'} task</h2>
+  <div class="field"><label>Title</label><input id="tTitle" placeholder="e.g. Call the pharmacy" value="${esc(x?.title||'')}"></div>
+  <div class="field"><label>Date</label><input type="date" id="tDate" value="${x?.date||todayISO()}"></div>
+  <div class="field"><label>Time (optional)</label><input type="time" id="tTime" value="${x?.time||''}"></div>
+  <div class="field"><label>Location (optional)</label><input id="tLocation" value="${esc(x?.location||'')}"></div>
+  <div class="field"><label>Notes</label><textarea id="tNotes">${esc(x?.notes||'')}</textarea></div>
+  <button class="btn primary" data-act="save-task" data-id="${x?.id||''}">Save</button>
   <div style="height:.5rem;"></div>
   <button class="btn ghost" data-act="close-modal">Cancel</button>
   `;
@@ -773,6 +981,8 @@ function renderTaskDetailModal(){
     <div style="margin-top:.6rem;"><span class="pill ${t.status}">${t.status}</span></div>
     ${t.history && t.history.length ? `<div style="margin-top:.7rem; font-size:.75rem; color:var(--muted);">${t.history.map(h=>esc(h)).join('<br>')}</div>` : ''}
   </div>
+  <button class="btn primary" data-act="edit-task" data-id="${t.id}">Edit task</button>
+  <div style="height:.5rem;"></div>
   ${t.status==='open' ? `
     <div class="btn-row" style="margin-bottom:.5rem;">
       <button class="btn primary" data-act="task-complete" data-id="${t.id}">Complete</button>
@@ -824,6 +1034,9 @@ function wireEvents(){
   app.querySelectorAll('[data-act="add-activity"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'add-activity'})));
   app.querySelectorAll('[data-act="add-health"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'add-health'})));
   app.querySelectorAll('[data-act="add-task"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'add-task'})));
+  app.querySelectorAll('[data-act="add-plan"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'edit-plan'})));
+  app.querySelectorAll('[data-act="add-metric"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'add-metric'})));
+  app.querySelectorAll('[data-act="scan-health"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'add-metric',scan:true})));
 
   app.querySelectorAll('[data-open-health]').forEach(el=>{
     el.addEventListener('click', ()=> openModal({type:'view-health', id: el.getAttribute('data-open-health')}));
@@ -831,6 +1044,16 @@ function wireEvents(){
   app.querySelectorAll('[data-open-task]').forEach(el=>{
     el.addEventListener('click', ()=> openModal({type:'view-task', id: el.getAttribute('data-open-task')}));
   });
+  app.querySelectorAll('[data-open-cardio]').forEach(el=>{
+    el.addEventListener('click', ()=> openModal({type:'add-cardio', id: el.getAttribute('data-open-cardio')}));
+  });
+  app.querySelectorAll('[data-open-activity]').forEach(el=>{
+    el.addEventListener('click', ()=> openModal({type:'add-activity', id: el.getAttribute('data-open-activity')}));
+  });
+  app.querySelectorAll('[data-open-plan]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'edit-plan',id:el.getAttribute('data-open-plan')})));
+  app.querySelectorAll('[data-open-metric]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'add-metric',id:el.getAttribute('data-open-metric')})));
+  const resumeSession = app.querySelector('[data-act="resume-session"]');
+  if(resumeSession) resumeSession.addEventListener('click', ()=>go({screen:'fitness-session'}));
 
   // session-specific
   const openWeightBtn = app.querySelector('[data-act="open-weight"]');
@@ -838,6 +1061,8 @@ function wireEvents(){
   const markCompleteBtn = app.querySelector('[data-act="mark-complete"]');
   if(markCompleteBtn) markCompleteBtn.addEventListener('click', ()=>{
     const w = session.stationLogs[session.idx].weight;
+    const reps=document.getElementById('sessionReps')?.value;
+    session.stationLogs[session.idx].reps=reps?Math.max(0,Math.min(999,parseInt(reps))):null;
     markStationComplete(w);
   });
   const sessBack = app.querySelector('[data-act="session-back"]');
@@ -865,6 +1090,7 @@ function wireEvents(){
     el.addEventListener('click', ()=>{
       const raw = el.getAttribute('data-weight');
       session.stationLogs[session.idx].weight = raw==='BW' ? 'BW' : parseFloat(raw);
+      saveSession();
       closeModal();
     });
   });
@@ -872,8 +1098,10 @@ function wireEvents(){
   const saveCardio = app.querySelector('[data-act="save-cardio"]');
   if(saveCardio) saveCardio.addEventListener('click', ()=>{
     const g = id => document.getElementById(id);
-    DB.cardioLogs.push({
-      id: uid(), createdAt: Date.now(),
+    const id = saveCardio.getAttribute('data-id');
+    const existing = DB.cardioLogs.find(x=>x.id===id);
+    const record = {
+      id: id||uid(), createdAt: existing?.createdAt||Date.now(),
       type: g('cType').value, date: g('cDate').value || todayISO(),
       duration: g('cDuration').value?parseFloat(g('cDuration').value):null,
       calories: g('cCalories').value?parseFloat(g('cCalories').value):null,
@@ -881,7 +1109,8 @@ function wireEvents(){
       hrMax: g('cHrMax').value?parseFloat(g('cHrMax').value):null,
       steps: g('cSteps').value?parseFloat(g('cSteps').value):null,
       vo2max: g('cVo2').value?parseFloat(g('cVo2').value):null,
-    });
+    };
+    if(existing) Object.assign(existing, record); else DB.cardioLogs.push(record);
     saveState(); closeModal();
   });
 
@@ -889,12 +1118,15 @@ function wireEvents(){
   if(saveActivity) saveActivity.addEventListener('click', ()=>{
     const g = id => document.getElementById(id);
     if(!g('aType').value.trim()) return;
-    DB.activityLogs.push({
-      id: uid(), createdAt: Date.now(),
+    const id = saveActivity.getAttribute('data-id');
+    const existing = DB.activityLogs.find(x=>x.id===id);
+    const record = {
+      id: id||uid(), createdAt: existing?.createdAt||Date.now(),
       type: g('aType').value.trim(), date: g('aDate').value || todayISO(),
       duration: g('aDuration').value?parseFloat(g('aDuration').value):null,
       notes: g('aNotes').value.trim(),
-    });
+    };
+    if(existing) Object.assign(existing, record); else DB.activityLogs.push(record);
     saveState(); closeModal();
   });
 
@@ -902,29 +1134,128 @@ function wireEvents(){
   if(saveHealth) saveHealth.addEventListener('click', ()=>{
     const g = id => document.getElementById(id);
     if(!g('hLabel').value.trim()) return;
-    DB.healthEntries.push({
-      id: uid(), category: g('hCat').value, label: g('hLabel').value.trim(),
+    const id = saveHealth.getAttribute('data-id');
+    const existing = DB.healthEntries.find(x=>x.id===id);
+    const record = {
+      id: id||uid(), category: g('hCat').value, label: g('hLabel').value.trim(),
       value: g('hValue').value.trim(), unit: g('hUnit').value.trim(),
       date: g('hDate').value || todayISO(), notes: g('hNotes').value.trim(),
-    });
+    };
+    if(existing) Object.assign(existing, record); else DB.healthEntries.push(record);
     saveState(); closeModal();
   });
   const delHealth = app.querySelector('[data-act="delete-health"]');
   if(delHealth) delHealth.addEventListener('click', ()=>{
+    if(!confirm('Delete this health entry? This cannot be undone.')) return;
     DB.healthEntries = DB.healthEntries.filter(e=>e.id!==delHealth.getAttribute('data-id'));
     saveState(); closeModal();
   });
+  const editHealth = app.querySelector('[data-act="edit-health"]');
+  if(editHealth) editHealth.addEventListener('click', ()=>openModal({type:'add-health', id:editHealth.getAttribute('data-id')}));
 
   const saveTask = app.querySelector('[data-act="save-task"]');
   if(saveTask) saveTask.addEventListener('click', ()=>{
     const g = id => document.getElementById(id);
     if(!g('tTitle').value.trim()) return;
-    DB.tasks.push({
-      id: uid(), title: g('tTitle').value.trim(), date: g('tDate').value || null,
+    const id = saveTask.getAttribute('data-id');
+    const existing = DB.tasks.find(x=>x.id===id);
+    const record = {
+      id: id||uid(), title: g('tTitle').value.trim(), date: g('tDate').value || null,
       time: g('tTime').value || null, location: g('tLocation').value.trim(),
-      notes: g('tNotes').value.trim(), status:'open', history:[`Created ${fmtDateTime(Date.now())}`],
-    });
+      notes: g('tNotes').value.trim(), status:existing?.status||'open',
+      history:existing?.history||[`Created ${fmtDateTime(Date.now())}`],
+    };
+    if(existing){ record.history.push(`Edited ${fmtDateTime(Date.now())}`); Object.assign(existing, record); }
+    else DB.tasks.push(record);
     saveState(); closeModal();
+  });
+  const editTask = app.querySelector('[data-act="edit-task"]');
+  if(editTask) editTask.addEventListener('click', ()=>openModal({type:'add-task', id:editTask.getAttribute('data-id')}));
+
+  app.querySelectorAll('[data-delete-record]').forEach(el=>el.addEventListener('click', ()=>{
+    if(!confirm('Delete this record? This cannot be undone.')) return;
+    const keys={cardio:'cardioLogs',activity:'activityLogs',metric:'dailyMetrics'};
+    const key=keys[el.getAttribute('data-delete-record')];
+    if(!key) return;
+    DB[key] = DB[key].filter(x=>x.id!==el.getAttribute('data-id'));
+    saveState(); closeModal();
+  }));
+
+  const savePlan=app.querySelector('[data-act="save-plan"]');
+  if(savePlan) savePlan.addEventListener('click', ()=>{
+    const name=document.getElementById('pName').value.trim();
+    const stations=document.getElementById('pExercises').value.split('\n').map(line=>{
+      const [exercise,target='',cueText='',reps='']=line.split('|').map(x=>x.trim());
+      return {name:exercise,target:target||'General',cues:cueText.split(';').map(x=>x.trim()).filter(Boolean),reps:reps||null};
+    }).filter(x=>x.name).slice(0,30);
+    if(!name || !stations.length){ alert('Add a plan name and at least one exercise.'); return; }
+    const id=savePlan.getAttribute('data-id'); const existing=DB.workoutPlans.find(x=>x.id===id);
+    const coreName=document.getElementById('pCore').value.trim()||'Plank';
+    const restExercise=Math.max(0,Math.min(300,parseInt(document.getElementById('pRestExercise').value)||0));
+    const restRound=Math.max(0,Math.min(600,parseInt(document.getElementById('pRestRound').value)||0));
+    const record={id:id||uid(),name,stations,restExercise,restRound,core:{name:coreName,target:'Core',cues:document.getElementById('pCoreCues').value.split(';').map(x=>x.trim()).filter(Boolean)}};
+    if(existing) Object.assign(existing,record); else DB.workoutPlans.push(record);
+    saveState(); closeModal();
+  });
+  const deletePlan=app.querySelector('[data-act="delete-plan"]');
+  if(deletePlan) deletePlan.addEventListener('click', ()=>{
+    if(DB.workoutPlans.length<=1){ alert('Keep at least one workout plan.'); return; }
+    if(!confirm('Delete this workout plan? Completed workout history will remain.')) return;
+    DB.workoutPlans=DB.workoutPlans.filter(x=>x.id!==deletePlan.getAttribute('data-id')); saveState(); closeModal();
+  });
+
+  const saveMetric=app.querySelector('[data-act="save-metric"]');
+  if(saveMetric) saveMetric.addEventListener('click', ()=>{
+    const val=id=>{const raw=document.getElementById(id).value;return raw===''?null:parseFloat(raw)};
+    const id=saveMetric.getAttribute('data-id'); const existing=DB.dailyMetrics.find(x=>x.id===id);
+    const record={id:id||uid(),createdAt:existing?.createdAt||Date.now(),date:document.getElementById('mDate').value||todayISO(),steps:val('mSteps'),distanceKm:val('mDistance'),calories:val('mCalories'),heartRate:val('mHeart'),restingHr:val('mResting'),sleepHours:val('mSleep'),weightKg:val('mWeight'),notes:document.getElementById('mNotes').value.trim()};
+    if(existing) Object.assign(existing,record); else DB.dailyMetrics.push(record);
+    saveState(); closeModal();
+  });
+  const runOcr=app.querySelector('[data-act="run-ocr"]');
+  if(runOcr) runOcr.addEventListener('click', async ()=>{
+    const file=document.getElementById('metricImage').files[0]; const status=document.getElementById('ocrStatus');
+    if(!file){ status.textContent='Choose a screenshot first.'; return; }
+    if(file.size>12*1024*1024){ status.textContent='Please choose an image under 12 MB.'; return; }
+    runOcr.disabled=true; status.textContent='Loading private on-device text recognition…';
+    try{
+      const engine=await loadOcrEngine();
+      const result=await engine.recognize(file,'eng',{logger:m=>{if(m.status&&m.progress!=null)status.textContent=`${m.status} · ${Math.round(m.progress*100)}%`;}});
+      const text=result.data.text||'';
+      const set=(id,v)=>{if(v!=null&&!Number.isNaN(v))document.getElementById(id).value=v};
+      set('mSteps',numberNear(text,['steps','step count'])); set('mDistance',numberNear(text,['distance']));
+      set('mCalories',numberNear(text,['active calories','calories','kcal'])); set('mResting',numberNear(text,['resting heart']));
+      set('mHeart',numberNear(text,['average heart','avg heart','heart rate'])); set('mSleep',numberNear(text,['sleep'])); set('mWeight',numberNear(text,['weight']));
+      status.textContent='Extraction complete. Review every value before saving; screenshots vary by watch and app.';
+    }catch(e){ status.textContent='Could not read this screenshot. Check your connection or enter the values manually.'; }
+    runOcr.disabled=false;
+  });
+
+  const exportBtn = app.querySelector('[data-act="export-data"]');
+  if(exportBtn) exportBtn.addEventListener('click', ()=>{
+    const payload = {app:'Pulse', version:1, exportedAt:new Date().toISOString(), data:DB};
+    const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href=url; a.download=`pulse-backup-${todayISO()}.json`; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  });
+  const importFile = app.querySelector('#importFile');
+  const chooseImport = app.querySelector('[data-act="choose-import"]');
+  if(chooseImport && importFile) chooseImport.addEventListener('click', ()=>importFile.click());
+  if(importFile) importFile.addEventListener('change', async ()=>{
+    const file = importFile.files[0];
+    if(!file) return;
+    try{
+      const parsed = JSON.parse(await file.text());
+      const incoming = parsed?.app==='Pulse' ? parsed.data : parsed;
+      const required = ['workoutSessions','cardioLogs','activityLogs','healthEntries','tasks'];
+      if(!incoming || !required.every(k=>Array.isArray(incoming[k]))) throw new Error('Invalid Pulse backup');
+      if(!confirm('Replace all data on this device with this backup?')) return;
+      DB = {...incoming, settings:{lastWorkoutType:null,rounds:3,...incoming.settings}};
+      ensureModernData();
+      saveState(); render(); alert('Backup restored successfully.');
+    }catch(e){ alert('This file is not a valid Pulse backup.'); }
   });
 
   ['task-complete','task-postpone','task-cancel','task-reopen'].forEach(act=>{
@@ -959,6 +1290,13 @@ function wireEvents(){
 
 /* ============================= INIT ============================= */
 render();
+
+// Continue an in-progress rest timer after the page or app is reopened.
+if(session && (session.phase==='rest-station' || session.phase==='rest-round')){
+  const remaining = session.restEndsAt ? Math.max(0, Math.ceil((session.restEndsAt-Date.now())/1000)) : session.restRemaining;
+  if(remaining>0) startRestTimer(remaining);
+  else { session.idx++; session.phase='exercise'; session.restEndsAt=null; saveSession(); render(); }
+}
 
 /* register service worker for notifications */
 if('serviceWorker' in navigator){
