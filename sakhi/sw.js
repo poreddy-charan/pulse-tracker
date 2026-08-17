@@ -1,4 +1,4 @@
-const CACHE_NAME='sakhi-shell-v1';
+const CACHE_NAME='sakhi-shell-v3';
 const APP_FILES=['./','./index.html','./manifest.json','./icon-192.png','./icon-512.png'];
 
 self.addEventListener('install',event=>{
