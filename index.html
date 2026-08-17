@@ -214,6 +214,7 @@ function enforceDataLimits(){
     p.journal=Array.isArray(p.journal)?p.journal.slice(-1000):[];
     p.appointments=Array.isArray(p.appointments)?p.appointments.slice(-500):[];
     p.dailyChecks=Array.isArray(p.dailyChecks)?p.dailyChecks.slice(-500):[];
+    p.wellnessLogs=Array.isArray(p.wellnessLogs)?p.wellnessLogs.slice(-1000):[];
   });
 }
 function saveState(){
@@ -275,7 +276,7 @@ const WORKOUT_B = {
 function ensureModernData(){
   if(!Array.isArray(DB.dailyMetrics)) DB.dailyMetrics=[];
   if(!Array.isArray(DB.pregnancyProfiles)) DB.pregnancyProfiles=[];
-  DB.pregnancyProfiles.forEach(p=>{p.journal=Array.isArray(p.journal)?p.journal:[];p.appointments=Array.isArray(p.appointments)?p.appointments:[];p.dailyChecks=Array.isArray(p.dailyChecks)?p.dailyChecks:[];p.settings=p.settings||{};});
+  DB.pregnancyProfiles.forEach(p=>{p.journal=Array.isArray(p.journal)?p.journal:[];p.appointments=Array.isArray(p.appointments)?p.appointments:[];p.dailyChecks=Array.isArray(p.dailyChecks)?p.dailyChecks:[];p.wellnessLogs=Array.isArray(p.wellnessLogs)?p.wellnessLogs:[];p.settings=p.settings||{};});
   if(!Array.isArray(DB.workoutPlans) || !DB.workoutPlans.length){
     DB.workoutPlans=[WORKOUT_A,WORKOUT_B].map(w=>({
       id:'plan-'+w.key, name:w.label, key:w.key, builtIn:true,
@@ -445,7 +446,7 @@ function renderHome(){
 
 /* ============================= DATA ============================= */
 function renderData(){
-  const counts = [DB.workoutSessions.length, DB.cardioLogs.length, DB.activityLogs.length, DB.healthEntries.length, DB.dailyMetrics.length, DB.tasks.length, DB.pregnancyProfiles.reduce((n,p)=>n+(p.journal?.length||0)+(p.appointments?.length||0)+(p.dailyChecks?.length||0),0)];
+  const counts = [DB.workoutSessions.length, DB.cardioLogs.length, DB.activityLogs.length, DB.healthEntries.length, DB.dailyMetrics.length, DB.tasks.length, DB.pregnancyProfiles.reduce((n,p)=>n+(p.journal?.length||0)+(p.appointments?.length||0)+(p.dailyChecks?.length||0)+(p.wellnessLogs?.length||0),0)];
   const storageKB = Math.ceil(new Blob([JSON.stringify(DB)]).size/1024);
   return `
   <div class="card">
@@ -492,14 +493,21 @@ function renderPregnancy(){
   ${pregnancyTab==='today'?renderPregnancyToday(p):pregnancyTab==='journal'?renderPregnancyJournal(p):renderPregnancyAppointments(p)}`;
 }
 function renderPregnancyToday(p){
-  const c=pregnancyToday(p), s=p.settings||{}, goal=s.waterGoal||8, pct=Math.min(100,Math.round((c.waterCups||0)/goal*100));
+  const c=pregnancyToday(p), s=p.settings||{}, goal=s.waterGoalMl||(s.waterGoal||8)*250, bottle=s.bottleSizeMl||500, amount=c.waterMl??(c.waterCups||0)*250, pct=Math.min(100,Math.round(amount/goal*100));
+  const movement=(p.wellnessLogs||[]).find(x=>x.date===todayISO())||{};
+  const recentMovement=[...(p.wellnessLogs||[])].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,7);
   const next=[...(p.appointments||[])].filter(a=>a.status==='scheduled'&&a.date>=todayISO()).sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time))[0];
   return `<div class="section-label">Daily care</div>
     <div class="card"><div class="list-row" style="padding-top:0"><div class="main"><div class="title">${esc(s.prenatalLabel||'Daily prenatal care')}</div><div class="meta">Scheduled ${s.prenatalTime||'09:00'} · repeat hourly until marked done</div></div><span class="pill ${c.prenatalDoneAt?'done':'open'}">${c.prenatalDoneAt?'Done':'Due'}</span></div>
     ${c.prenatalDoneAt?`<button class="btn ghost" data-act="undo-prenatal">Marked done ${new Date(c.prenatalDoneAt).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} · Undo</button>`:`<button class="btn primary" data-act="complete-prenatal">Mark done today</button>`}</div>
-    <div class="card"><div class="list-row" style="padding-top:0"><div class="main"><div class="title">Water</div><div class="meta">Personal goal: ${goal} cups · reminders every ${s.waterIntervalMin||120} minutes</div></div><div class="val">${c.waterCups||0}/${goal}</div></div>
+    <div class="card"><div class="list-row" style="padding-top:0"><div class="main"><div class="title">Water</div><div class="meta">Personal goal: ${goal.toLocaleString()} ml · ${bottle} ml bottle · every ${s.waterIntervalMin||120} minutes</div></div><div class="val">${amount.toLocaleString()} ml</div></div>
       <div style="height:.45rem;background:var(--surface-2);border-radius:99px;overflow:hidden;margin:.3rem 0 .8rem"><div style="height:100%;width:${pct}%;background:var(--accent)"></div></div>
-      <div class="btn-row"><button class="btn" data-act="water-minus">− Cup</button><button class="btn primary" data-act="water-plus">+ Cup</button></div></div>
+      <div style="font-size:.72rem;color:var(--muted);margin-bottom:.6rem">Equivalent to ${(amount/bottle).toFixed(1)} bottle${Math.abs(amount/bottle-1)<.01?'':'s'}.</div>
+      <div class="btn-row"><button class="btn" data-water-add="-250">− 250 ml</button><button class="btn" data-water-add="250">+ 250 ml</button><button class="btn primary" data-water-add="${bottle}">+ Bottle</button></div>
+      <div class="btn-row" style="margin-top:.5rem"><div class="field" style="flex:1;margin:0"><input type="number" id="waterCustomMl" inputmode="numeric" min="1" max="3000" placeholder="Custom ml"></div><button class="btn" style="flex:0 0 auto" data-act="water-custom">Add</button></div></div>
+    <div class="card"><div class="list-row" style="padding-top:0"><div class="main"><div class="title">Movement & mindfulness</div><div class="meta">Steps, walking, yoga, meditation, or clinician-approved prenatal exercise</div></div></div>
+      <div class="stat-row" style="margin-bottom:.7rem"><div class="stat-tile"><div class="n">${(movement.steps||0).toLocaleString()}</div><div class="l">Steps</div></div><div class="stat-tile"><div class="n">${movement.yogaMin||0}</div><div class="l">Yoga min</div></div><div class="stat-tile"><div class="n">${movement.meditationMin||0}</div><div class="l">Meditation min</div></div></div><button class="btn" data-act="log-pregnancy-wellness">Log today</button></div>
+    ${recentMovement.length?`<div class="section-label">Recent movement</div>${recentMovement.map(x=>`<div class="card" data-open-pregnancy-wellness="${x.date}" style="margin-bottom:.5rem"><div class="list-row" style="border:0;padding:0"><div class="main"><div class="title">${fmtDate(x.date)}</div><div class="meta">${(x.steps||0).toLocaleString()} steps${x.walkingMin?' · '+x.walkingMin+'m walk':''}${x.yogaMin?' · '+x.yogaMin+'m yoga':''}${x.meditationMin?' · '+x.meditationMin+'m meditation':''}</div></div><div class="chev">›</div></div></div>`).join('')}`:''}
     <button class="btn ${notificationPermission()==='granted'?'':'primary'}" data-act="enable-pregnancy-notifications">${notificationPermission()==='granted'?'Notifications enabled':notificationPermission()==='unsupported'?'Notifications unavailable':'Enable notifications'}</button>
     <p style="font-size:.72rem;color:var(--muted);line-height:1.45">Hourly repeats work while Pulse can run and catch up when reopened. Guaranteed closed-app delivery requires a future push service.</p>
     <div class="section-label">Next appointment</div>${next?`<div class="card" data-open-pregnancy-appointment="${next.id}"><div class="title">${esc(next.reason||'Prenatal appointment')}</div><div class="meta">${fmtDate(next.date)}${next.time?' · '+next.time:''}${next.provider?' · '+esc(next.provider):''}</div></div>`:emptyBlock('📅','No appointment scheduled','Add the next prenatal visit and questions to ask.')}`;
@@ -537,11 +545,11 @@ async function checkPregnancyReminders(){
         s.lastPrenatalNotice=key; p.settings=s; saveState();
       }
     }
-    const start=parseClock(s.waterStart,480), end=parseClock(s.waterEnd,1200), interval=Math.max(30,s.waterIntervalMin||120), goal=s.waterGoal||8;
-    if(mins>=start&&mins<=end&&(c.waterCups||0)<goal){
+    const start=parseClock(s.waterStart,480), end=parseClock(s.waterEnd,1200), interval=Math.max(30,s.waterIntervalMin||120), goal=s.waterGoalMl||(s.waterGoal||8)*250, amount=c.waterMl??(c.waterCups||0)*250;
+    if(mins>=start&&mins<=end&&amount<goal){
       const slot=Math.floor((mins-start)/interval), key=`${today}-water-${slot}`;
       if(slot>=0&&s.lastWaterNotice!==key){
-        await showPulseNotification(`${p.name}: Water reminder`,`${c.waterCups||0} of ${goal} cups logged today. Add a cup in Pulse when she drinks.`,`pregnancy-water-${p.id}`);
+        await showPulseNotification(`${p.name}: Water reminder`,`${amount.toLocaleString()} of ${goal.toLocaleString()} ml logged today. Add ml or a bottle in Pulse when she drinks.`,`pregnancy-water-${p.id}`);
         s.lastWaterNotice=key; p.settings=s; saveState();
       }
     }
@@ -942,6 +950,7 @@ function renderModal(){
   else if(m.type==='pregnancy-profile') inner = renderPregnancyProfileModal();
   else if(m.type==='pregnancy-journal') inner = renderPregnancyJournalModal();
   else if(m.type==='pregnancy-appointment') inner = renderPregnancyAppointmentModal();
+  else if(m.type==='pregnancy-wellness') inner = renderPregnancyWellnessModal();
   else if(m.type==='confirm-end-session') inner = renderConfirmEndSession();
   return `<div class="modal-backdrop" data-act="close-modal-backdrop"><div class="modal" data-stop="1">
     <div class="modal-handle"></div>${inner}
@@ -1061,7 +1070,8 @@ function renderPregnancyProfileModal(){
     <div class="field"><label>Reminder label</label><input id="ppPrenatalLabel" maxlength="80" value="${esc(s.prenatalLabel||'Prenatal vitamin')}" placeholder="Use the exact care instruction"></div>
     <div class="field"><label>Daily time</label><input type="time" id="ppPrenatalTime" value="${s.prenatalTime||'09:00'}"></div>
     <div class="section-label">Water tracking</div>
-    <div class="btn-row"><div class="field" style="flex:1"><label>Daily cup goal</label><input type="number" id="ppWaterGoal" min="1" max="30" value="${s.waterGoal||8}"></div><div class="field" style="flex:1"><label>Remind every</label><select id="ppWaterInterval">${[30,60,90,120,180,240].map(n=>`<option value="${n}" ${n===(s.waterIntervalMin||120)?'selected':''}>${n<60?n+' min':n/60+' hr'}</option>`).join('')}</select></div></div>
+    <div class="btn-row"><div class="field" style="flex:1"><label>Personal daily goal (ml)</label><input type="number" id="ppWaterGoalMl" min="250" max="10000" step="50" value="${s.waterGoalMl||(s.waterGoal||8)*250}"></div><div class="field" style="flex:1"><label>Bottle size (ml)</label><input type="number" id="ppBottleSize" min="100" max="3000" step="50" value="${s.bottleSizeMl||500}"></div></div>
+    <div class="field"><label>Remind every</label><select id="ppWaterInterval">${[30,60,90,120,180,240].map(n=>`<option value="${n}" ${n===(s.waterIntervalMin||120)?'selected':''}>${n<60?n+' min':n/60+' hr'}</option>`).join('')}</select><div style="font-size:.7rem;color:var(--muted);margin-top:.3rem">Set the amount and timing that her care professional recommends.</div></div>
     <div class="btn-row"><div class="field" style="flex:1"><label>Start</label><input type="time" id="ppWaterStart" value="${s.waterStart||'08:00'}"></div><div class="field" style="flex:1"><label>Stop</label><input type="time" id="ppWaterEnd" value="${s.waterEnd||'20:00'}"></div></div>
     <button class="btn primary" data-act="save-pregnancy-profile" data-id="${p?.id||''}">Save profile</button>
     ${p&&DB.pregnancyProfiles.length>1?`<div style="height:.5rem"></div><button class="btn danger" data-act="delete-pregnancy-profile" data-id="${p.id}">Delete profile</button>`:''}
@@ -1092,6 +1102,17 @@ function renderPregnancyAppointmentModal(){
     <button class="btn primary" data-act="save-pregnancy-appointment" data-id="${a?.id||''}">Save appointment</button>
     ${a?`<div style="height:.5rem"></div><button class="btn danger" data-act="delete-pregnancy-appointment" data-id="${a.id}">Delete appointment</button>`:''}
     <div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Cancel</button>`;
+}
+function renderPregnancyWellnessModal(){
+  const p=activePregnancyProfile(), x=(p.wellnessLogs||[]).find(v=>v.date===(modal.date||todayISO()))||{};
+  return `<h2>Movement & mindfulness</h2>
+    <div class="field"><label>Date</label><input type="date" id="pwDate" value="${x.date||todayISO()}"></div>
+    <div class="field"><label>Steps</label><input type="number" id="pwSteps" inputmode="numeric" min="0" max="100000" value="${x.steps??''}"></div>
+    <div class="btn-row"><div class="field" style="flex:1"><label>Walking (min)</label><input type="number" id="pwWalking" min="0" max="600" value="${x.walkingMin??''}"></div><div class="field" style="flex:1"><label>Prenatal yoga (min)</label><input type="number" id="pwYoga" min="0" max="600" value="${x.yogaMin??''}"></div></div>
+    <div class="btn-row"><div class="field" style="flex:1"><label>Meditation (min)</label><input type="number" id="pwMeditation" min="0" max="600" value="${x.meditationMin??''}"></div><div class="field" style="flex:1"><label>Other approved exercise (min)</label><input type="number" id="pwExercise" min="0" max="600" value="${x.prenatalExerciseMin??''}"></div></div>
+    <div class="field"><label>Energy or notes</label><textarea id="pwNotes" maxlength="1000" placeholder="How it felt, modifications, or something to discuss with the care team">${esc(x.notes||'')}</textarea></div>
+    <div class="card" style="font-size:.75rem;color:var(--muted);line-height:1.45">Only log activities her obstetric care professional says are appropriate. Stop and contact the care team for concerning symptoms during activity.</div>
+    <button class="btn primary" data-act="save-pregnancy-wellness">Save log</button>${x.id?`<div style="height:.5rem"></div><button class="btn danger" data-act="delete-pregnancy-wellness" data-id="${x.id}">Delete log</button>`:''}<div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Cancel</button>`;
 }
 
 function renderHealthDetailModal(){
@@ -1201,6 +1222,7 @@ function wireEvents(){
   app.querySelectorAll('[data-act="edit-pregnancy-profile"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-profile',id:activePregnancyProfile()?.id})));
   app.querySelectorAll('[data-act="add-pregnancy-journal"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-journal'})));
   app.querySelectorAll('[data-act="add-pregnancy-appointment"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-appointment'})));
+  app.querySelectorAll('[data-act="log-pregnancy-wellness"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-wellness'})));
 
   app.querySelectorAll('[data-open-health]').forEach(el=>{
     el.addEventListener('click', ()=> openModal({type:'view-health', id: el.getAttribute('data-open-health')}));
@@ -1218,6 +1240,7 @@ function wireEvents(){
   app.querySelectorAll('[data-open-metric]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'add-metric',id:el.getAttribute('data-open-metric')})));
   app.querySelectorAll('[data-open-pregnancy-journal]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-journal',id:el.getAttribute('data-open-pregnancy-journal')})));
   app.querySelectorAll('[data-open-pregnancy-appointment]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-appointment',id:el.getAttribute('data-open-pregnancy-appointment')})));
+  app.querySelectorAll('[data-open-pregnancy-wellness]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-wellness',date:el.getAttribute('data-open-pregnancy-wellness')})));
   const resumeSession = app.querySelector('[data-act="resume-session"]');
   if(resumeSession) resumeSession.addEventListener('click', ()=>go({screen:'fitness-session'}));
 
@@ -1401,8 +1424,8 @@ function wireEvents(){
   if(savePregnancyProfile) savePregnancyProfile.addEventListener('click',()=>{
     const name=document.getElementById('ppName').value.trim(); if(!name){alert('Add a profile name.');return;}
     const id=savePregnancyProfile.getAttribute('data-id'), existing=DB.pregnancyProfiles.find(x=>x.id===id);
-    const settings={...(existing?.settings||{}),prenatalLabel:document.getElementById('ppPrenatalLabel').value.trim()||'Daily prenatal care',prenatalTime:document.getElementById('ppPrenatalTime').value||'09:00',waterGoal:Math.max(1,Math.min(30,parseInt(document.getElementById('ppWaterGoal').value)||8)),waterIntervalMin:parseInt(document.getElementById('ppWaterInterval').value)||120,waterStart:document.getElementById('ppWaterStart').value||'08:00',waterEnd:document.getElementById('ppWaterEnd').value||'20:00'};
-    const record={id:id||uid(),name,dueDate:document.getElementById('ppDueDate').value||null,createdAt:existing?.createdAt||Date.now(),settings,journal:existing?.journal||[],appointments:existing?.appointments||[],dailyChecks:existing?.dailyChecks||[]};
+    const settings={...(existing?.settings||{}),prenatalLabel:document.getElementById('ppPrenatalLabel').value.trim()||'Daily prenatal care',prenatalTime:document.getElementById('ppPrenatalTime').value||'09:00',waterGoalMl:Math.max(250,Math.min(10000,parseInt(document.getElementById('ppWaterGoalMl').value)||2000)),bottleSizeMl:Math.max(100,Math.min(3000,parseInt(document.getElementById('ppBottleSize').value)||500)),waterIntervalMin:parseInt(document.getElementById('ppWaterInterval').value)||120,waterStart:document.getElementById('ppWaterStart').value||'08:00',waterEnd:document.getElementById('ppWaterEnd').value||'20:00'};
+    const record={id:id||uid(),name,dueDate:document.getElementById('ppDueDate').value||null,createdAt:existing?.createdAt||Date.now(),settings,journal:existing?.journal||[],appointments:existing?.appointments||[],dailyChecks:existing?.dailyChecks||[],wellnessLogs:existing?.wellnessLogs||[]};
     if(existing)Object.assign(existing,record);else DB.pregnancyProfiles.push(record);
     DB.settings.activePregnancyProfileId=record.id; saveState(); closeModal();
   });
@@ -1433,10 +1456,17 @@ function wireEvents(){
   if(completePrenatal) completePrenatal.addEventListener('click',()=>{const p=activePregnancyProfile(),c=mutablePregnancyToday(p);c.prenatalDoneAt=Date.now();saveState();if('clearAppBadge'in navigator)navigator.clearAppBadge().catch(()=>{});render();});
   const undoPrenatal=app.querySelector('[data-act="undo-prenatal"]');
   if(undoPrenatal) undoPrenatal.addEventListener('click',()=>{mutablePregnancyToday(activePregnancyProfile()).prenatalDoneAt=null;saveState();render();});
-  const waterPlus=app.querySelector('[data-act="water-plus"]');
-  if(waterPlus) waterPlus.addEventListener('click',()=>{const c=mutablePregnancyToday(activePregnancyProfile());c.waterCups=Math.min(50,(c.waterCups||0)+1);saveState();render();});
-  const waterMinus=app.querySelector('[data-act="water-minus"]');
-  if(waterMinus) waterMinus.addEventListener('click',()=>{const c=mutablePregnancyToday(activePregnancyProfile());c.waterCups=Math.max(0,(c.waterCups||0)-1);saveState();render();});
+  app.querySelectorAll('[data-water-add]').forEach(el=>el.addEventListener('click',()=>{const c=mutablePregnancyToday(activePregnancyProfile()),current=c.waterMl??(c.waterCups||0)*250;c.waterMl=Math.max(0,Math.min(20000,current+parseInt(el.getAttribute('data-water-add'))));saveState();render();}));
+  const waterCustom=app.querySelector('[data-act="water-custom"]');
+  if(waterCustom) waterCustom.addEventListener('click',()=>{const add=Math.max(0,Math.min(3000,parseInt(document.getElementById('waterCustomMl').value)||0));if(!add)return;const c=mutablePregnancyToday(activePregnancyProfile()),current=c.waterMl??(c.waterCups||0)*250;c.waterMl=Math.min(20000,current+add);saveState();render();});
+  const savePregnancyWellness=app.querySelector('[data-act="save-pregnancy-wellness"]');
+  if(savePregnancyWellness) savePregnancyWellness.addEventListener('click',()=>{
+    const p=activePregnancyProfile(),date=document.getElementById('pwDate').value||todayISO(),existing=(p.wellnessLogs||[]).find(x=>x.date===date),val=id=>{const raw=document.getElementById(id).value;return raw===''?null:Math.max(0,parseInt(raw)||0)};
+    const record={id:existing?.id||uid(),date,steps:Math.min(100000,val('pwSteps')||0),walkingMin:Math.min(600,val('pwWalking')||0),yogaMin:Math.min(600,val('pwYoga')||0),meditationMin:Math.min(600,val('pwMeditation')||0),prenatalExerciseMin:Math.min(600,val('pwExercise')||0),notes:document.getElementById('pwNotes').value.trim(),createdAt:existing?.createdAt||Date.now(),updatedAt:Date.now()};
+    if(existing)Object.assign(existing,record);else(p.wellnessLogs||(p.wellnessLogs=[])).push(record);saveState();closeModal();
+  });
+  const deletePregnancyWellness=app.querySelector('[data-act="delete-pregnancy-wellness"]');
+  if(deletePregnancyWellness) deletePregnancyWellness.addEventListener('click',()=>{if(!confirm('Delete this movement log?'))return;const p=activePregnancyProfile();p.wellnessLogs=p.wellnessLogs.filter(x=>x.id!==deletePregnancyWellness.getAttribute('data-id'));saveState();closeModal();});
   const enablePregnancyNotifications=app.querySelector('[data-act="enable-pregnancy-notifications"]');
   if(enablePregnancyNotifications) enablePregnancyNotifications.addEventListener('click',async()=>{
     if(!('Notification'in window)){alert('Notifications are not supported on this phone browser.');return;}
