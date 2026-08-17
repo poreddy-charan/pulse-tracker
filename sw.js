@@ -2,7 +2,7 @@
 
 const APP_SCOPE = './index.html';
 const PREGNANCY_SCOPE = './index.html?screen=pregnancy';
-const CACHE_NAME = 'pulse-shell-v5';
+const CACHE_NAME = 'pulse-shell-v7';
 const APP_FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', event => {
