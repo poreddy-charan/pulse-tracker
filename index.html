@@ -186,7 +186,7 @@ main{flex:1; padding:0 1rem 6rem;}
 const STORE_KEY = 'pulse_tracker_v1';
 const SESSION_KEY = 'pulse_active_session_v1';
 // Conservative limits keep browser storage bounded even after years of use.
-const DATA_LIMITS = {workoutSessions:500, cardioLogs:1000, activityLogs:1000, healthEntries:2000, dailyMetrics:2000, tasks:2000, workoutPlans:50};
+const DATA_LIMITS = {workoutSessions:500, cardioLogs:1000, activityLogs:1000, healthEntries:2000, dailyMetrics:2000, tasks:2000, workoutPlans:50, pregnancyProfiles:5};
 function loadState(){
   try{
     const raw = localStorage.getItem(STORE_KEY);
@@ -198,6 +198,7 @@ function loadState(){
     activityLogs: [],
     healthEntries: [],
     dailyMetrics: [],
+    pregnancyProfiles: [],
     tasks: [],
     settings: { lastWorkoutType: null, rounds: 3 }
   };
@@ -208,6 +209,11 @@ function enforceDataLimits(){
     if(DB[key].length>limit){
       DB[key] = [...DB[key]].sort((a,b)=>(b.createdAt||Date.parse(b.date)||0)-(a.createdAt||Date.parse(a.date)||0)).slice(0,limit);
     }
+  });
+  (DB.pregnancyProfiles||[]).forEach(p=>{
+    p.journal=Array.isArray(p.journal)?p.journal.slice(-1000):[];
+    p.appointments=Array.isArray(p.appointments)?p.appointments.slice(-500):[];
+    p.dailyChecks=Array.isArray(p.dailyChecks)?p.dailyChecks.slice(-500):[];
   });
 }
 function saveState(){
@@ -268,6 +274,8 @@ const WORKOUT_B = {
 };
 function ensureModernData(){
   if(!Array.isArray(DB.dailyMetrics)) DB.dailyMetrics=[];
+  if(!Array.isArray(DB.pregnancyProfiles)) DB.pregnancyProfiles=[];
+  DB.pregnancyProfiles.forEach(p=>{p.journal=Array.isArray(p.journal)?p.journal:[];p.appointments=Array.isArray(p.appointments)?p.appointments:[];p.dailyChecks=Array.isArray(p.dailyChecks)?p.dailyChecks:[];p.settings=p.settings||{};});
   if(!Array.isArray(DB.workoutPlans) || !DB.workoutPlans.length){
     DB.workoutPlans=[WORKOUT_A,WORKOUT_B].map(w=>({
       id:'plan-'+w.key, name:w.label, key:w.key, builtIn:true,
@@ -291,7 +299,8 @@ function nextWorkoutType(){
 function workoutByKey(k){ return DB.workoutPlans.find(p=>p.id===k || p.key===k) || WORKOUT_A; }
 
 /* ============================= ROUTER STATE ============================= */
-let view = { screen:'home' };
+const requestedScreen=new URLSearchParams(location.search).get('screen');
+let view = { screen:['home','fitness','health','planner','data','pregnancy'].includes(requestedScreen)?requestedScreen:'home' };
 let session = loadSession(); // live workout session state, restored after reloads
 let modal = null;   // {type,...}
 
@@ -301,7 +310,8 @@ function closeModal(){ modal = null; render(); }
 
 /* ============================= HELPERS ============================= */
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
-function todayISO(){ return new Date().toISOString().slice(0,10); }
+function localISO(d=new Date()){ return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10); }
+function todayISO(){ return localISO(); }
 function fmtDate(iso){
   const d = new Date(iso+'T00:00:00');
   return d.toLocaleDateString(undefined,{month:'short', day:'numeric', year:'numeric'});
@@ -312,7 +322,9 @@ function fmtDateTime(ts){
 }
 function isOverdue(t){ return t.status==='open' && t.date && t.date < todayISO(); }
 function esc(s){ return (s||'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function weekAgo(){ const d=new Date(); d.setDate(d.getDate()-7); return d.toISOString().slice(0,10); }
+function weekAgo(){ const d=new Date(); d.setDate(d.getDate()-7); return localISO(d); }
+function datePlusDays(days){ const d=new Date(); d.setDate(d.getDate()+days); return localISO(d); }
+function notificationPermission(){ return 'Notification' in window?Notification.permission:'unsupported'; }
 function numberNear(text, labels){
   const lines=text.split(/\n/).map(x=>x.trim()).filter(Boolean);
   for(const label of labels){
@@ -357,6 +369,7 @@ function screenTitle(){
     health:['Health',''],
     planner:['Day Planner',''],
     data:['Data & Backup',''],
+    pregnancy:['Pregnancy Companion',''],
   };
   return map[view.screen] || ['Pulse',''];
 }
@@ -371,6 +384,7 @@ function renderScreen(){
   else if(view.screen==='health') body = renderHealth();
   else if(view.screen==='planner') body = renderPlanner();
   else if(view.screen==='data') body = renderData();
+  else if(view.screen==='pregnancy') body = renderPregnancy();
   return `
   <div class="topbar">
     ${showBack ? `<button class="back-btn" data-act="back">‹</button>` : ''}
@@ -384,6 +398,7 @@ function backTarget(){
   if(view.screen==='health') return {screen:'home'};
   if(view.screen==='planner') return {screen:'home'};
   if(view.screen==='data') return {screen:'home'};
+  if(view.screen==='pregnancy') return {screen:'home'};
   return {screen:'home'};
 }
 
@@ -410,6 +425,11 @@ function renderHome(){
     <div class="body"><div class="t">Health</div><div class="s">Vitals · Meds · Appointments · Notes</div></div>
     <div class="chev">›</div>
   </div>
+  <div class="hero-tile pressable" data-nav="pregnancy">
+    <div class="ico" style="background:#49283d; color:#ffb8dc;">🌸</div>
+    <div class="body"><div class="t">Pregnancy Companion</div><div class="s">Journal · Daily care · Water · Appointments</div></div>
+    <div class="chev">›</div>
+  </div>
   <div class="hero-tile pressable" data-nav="planner">
     <div class="ico" style="background:#3a3320; color:var(--amber);">🗓️</div>
     <div class="body"><div class="t">Day Planner</div><div class="s">${overdueTasks?overdueTasks+' overdue · ':''}${openTasks} open task${openTasks===1?'':'s'}</div></div>
@@ -425,7 +445,7 @@ function renderHome(){
 
 /* ============================= DATA ============================= */
 function renderData(){
-  const counts = [DB.workoutSessions.length, DB.cardioLogs.length, DB.activityLogs.length, DB.healthEntries.length, DB.dailyMetrics.length, DB.tasks.length];
+  const counts = [DB.workoutSessions.length, DB.cardioLogs.length, DB.activityLogs.length, DB.healthEntries.length, DB.dailyMetrics.length, DB.tasks.length, DB.pregnancyProfiles.reduce((n,p)=>n+(p.journal?.length||0)+(p.appointments?.length||0)+(p.dailyChecks?.length||0),0)];
   const storageKB = Math.ceil(new Blob([JSON.stringify(DB)]).size/1024);
   return `
   <div class="card">
@@ -443,6 +463,98 @@ function renderData(){
   <button class="btn" data-act="choose-import">Restore from backup</button>
   <input id="importFile" type="file" accept="application/json,.json" hidden>
   <p style="font-size:.75rem; color:var(--muted); line-height:1.45;">Restoring replaces the records currently stored in this browser. Backup files may contain sensitive health information. Pulse keeps bounded history: 500 workouts, 1,000 cardio sessions, 1,000 activities, 2,000 health entries, and 2,000 tasks.</p>`;
+}
+
+/* ============================= PREGNANCY COMPANION ============================= */
+let pregnancyTab='today';
+function activePregnancyProfile(){
+  return DB.pregnancyProfiles.find(p=>p.id===DB.settings.activePregnancyProfileId)||DB.pregnancyProfiles[0]||null;
+}
+function pregnancyToday(p){
+  let c=(p.dailyChecks||[]).find(x=>x.date===todayISO());
+  return c||{date:todayISO(),prenatalDoneAt:null,waterCups:0};
+}
+function pregnancyWeek(p){
+  if(!p.dueDate) return null;
+  const days=Math.round((new Date(p.dueDate+'T12:00:00')-new Date(todayISO()+'T12:00:00'))/86400000);
+  const total=Math.max(0,280-days), week=Math.floor(total/7), day=total%7;
+  return {week,day,daysToDue:Math.max(0,days)};
+}
+function renderPregnancy(){
+  if(!DB.pregnancyProfiles.length) return `<div class="card" style="text-align:center"><div style="font-size:2.4rem">🌸</div><h2 style="font-size:1.15rem">A private pregnancy companion</h2><p style="color:var(--muted);font-size:.82rem;line-height:1.5">Track clinician-directed daily care, water, journals, questions, and appointments. Records stay only on this device and in exported backups.</p><button class="btn primary" data-act="add-pregnancy-profile">Create profile</button></div>
+  <div class="card"><div style="font-size:.75rem;color:var(--muted)">Important</div><div style="font-size:.8rem;line-height:1.45;margin-top:.25rem">This organizer does not replace prenatal care or medical advice. Confirm supplements, hydration, symptoms, and visit timing with her obstetric care professional.</div></div>`;
+  const p=activePregnancyProfile(), w=pregnancyWeek(p);
+  return `<div class="card" style="background:linear-gradient(135deg,#30202d,var(--surface))">
+    <div class="list-row" style="border:0;padding:0"><div class="main"><div class="title" style="font-size:1.1rem">${esc(p.name)}</div><div class="meta">${w?`Week ${w.week} + ${w.day} days · ${w.daysToDue} days to estimated due date`:'Add an estimated due date'}</div></div><button class="back-btn" data-act="edit-pregnancy-profile" aria-label="Edit profile">⚙</button></div>
+    ${DB.pregnancyProfiles.length>1?`<div class="field" style="margin-top:.7rem;margin-bottom:0"><label>Profile</label><select id="pregnancyProfileSelect">${DB.pregnancyProfiles.map(x=>`<option value="${x.id}" ${x.id===p.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div>`:''}
+  </div>
+  <div class="tabbar"><button data-preg-tab="today" class="${pregnancyTab==='today'?'active':''}">Today</button><button data-preg-tab="journal" class="${pregnancyTab==='journal'?'active':''}">Journal</button><button data-preg-tab="appointments" class="${pregnancyTab==='appointments'?'active':''}">Visits</button></div>
+  ${pregnancyTab==='today'?renderPregnancyToday(p):pregnancyTab==='journal'?renderPregnancyJournal(p):renderPregnancyAppointments(p)}`;
+}
+function renderPregnancyToday(p){
+  const c=pregnancyToday(p), s=p.settings||{}, goal=s.waterGoal||8, pct=Math.min(100,Math.round((c.waterCups||0)/goal*100));
+  const next=[...(p.appointments||[])].filter(a=>a.status==='scheduled'&&a.date>=todayISO()).sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time))[0];
+  return `<div class="section-label">Daily care</div>
+    <div class="card"><div class="list-row" style="padding-top:0"><div class="main"><div class="title">${esc(s.prenatalLabel||'Daily prenatal care')}</div><div class="meta">Scheduled ${s.prenatalTime||'09:00'} · repeat hourly until marked done</div></div><span class="pill ${c.prenatalDoneAt?'done':'open'}">${c.prenatalDoneAt?'Done':'Due'}</span></div>
+    ${c.prenatalDoneAt?`<button class="btn ghost" data-act="undo-prenatal">Marked done ${new Date(c.prenatalDoneAt).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} · Undo</button>`:`<button class="btn primary" data-act="complete-prenatal">Mark done today</button>`}</div>
+    <div class="card"><div class="list-row" style="padding-top:0"><div class="main"><div class="title">Water</div><div class="meta">Personal goal: ${goal} cups · reminders every ${s.waterIntervalMin||120} minutes</div></div><div class="val">${c.waterCups||0}/${goal}</div></div>
+      <div style="height:.45rem;background:var(--surface-2);border-radius:99px;overflow:hidden;margin:.3rem 0 .8rem"><div style="height:100%;width:${pct}%;background:var(--accent)"></div></div>
+      <div class="btn-row"><button class="btn" data-act="water-minus">− Cup</button><button class="btn primary" data-act="water-plus">+ Cup</button></div></div>
+    <button class="btn ${notificationPermission()==='granted'?'':'primary'}" data-act="enable-pregnancy-notifications">${notificationPermission()==='granted'?'Notifications enabled':notificationPermission()==='unsupported'?'Notifications unavailable':'Enable notifications'}</button>
+    <p style="font-size:.72rem;color:var(--muted);line-height:1.45">Hourly repeats work while Pulse can run and catch up when reopened. Guaranteed closed-app delivery requires a future push service.</p>
+    <div class="section-label">Next appointment</div>${next?`<div class="card" data-open-pregnancy-appointment="${next.id}"><div class="title">${esc(next.reason||'Prenatal appointment')}</div><div class="meta">${fmtDate(next.date)}${next.time?' · '+next.time:''}${next.provider?' · '+esc(next.provider):''}</div></div>`:emptyBlock('📅','No appointment scheduled','Add the next prenatal visit and questions to ask.')}`;
+}
+function renderPregnancyJournal(p){
+  const entries=[...(p.journal||[])].sort((a,b)=>b.createdAt-a.createdAt);
+  return `<button class="btn primary" data-act="add-pregnancy-journal" style="margin-bottom:1rem">+ Journal entry</button>${entries.length?entries.map(e=>`<div class="card" data-open-pregnancy-journal="${e.id}"><div class="list-row" style="border:0;padding:0"><div class="main"><div class="title">${fmtDate(e.date)}${e.mood?' · '+esc(e.mood):''}</div><div class="meta">${esc((e.notes||e.symptoms||'').slice(0,80))}</div></div><div class="chev">›</div></div></div>`).join(''):emptyBlock('📖','Journal is empty','Capture how the day felt, symptoms, gratitude, and questions for the care team.')}`;
+}
+function renderPregnancyAppointments(p){
+  const list=[...(p.appointments||[])].sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time));
+  return `<button class="btn primary" data-act="add-pregnancy-appointment" style="margin-bottom:1rem">+ Add appointment</button>${list.length?list.map(a=>`<div class="card" data-open-pregnancy-appointment="${a.id}"><div class="list-row" style="border:0;padding:0"><div class="main"><div class="title">${esc(a.reason||'Prenatal appointment')} <span class="pill ${a.status==='completed'?'done':a.status==='cancelled'?'cancelled':'open'}">${a.status}</span></div><div class="meta">${fmtDate(a.date)}${a.time?' · '+a.time:''}${a.provider?' · '+esc(a.provider):''}${a.location?' · '+esc(a.location):''}</div></div><div class="chev">›</div></div></div>`).join(''):emptyBlock('📅','No appointments','Store visits, locations, questions, and follow-up notes.')}`;
+}
+function mutablePregnancyToday(p){
+  let c=(p.dailyChecks||[]).find(x=>x.date===todayISO());
+  if(!c){ c={date:todayISO(),prenatalDoneAt:null,waterCups:0}; (p.dailyChecks||(p.dailyChecks=[])).push(c); }
+  return c;
+}
+async function showPulseNotification(title,body,tag){
+  if(notificationPermission()!=='granted'||!('serviceWorker' in navigator)) return;
+  const reg=await navigator.serviceWorker.ready;
+  (reg.active||navigator.serviceWorker.controller)?.postMessage({type:'show-notification',title,body,tag});
+}
+function minutesNow(){ const d=new Date(); return d.getHours()*60+d.getMinutes(); }
+function parseClock(value,fallback){ const m=/^(\d{1,2}):(\d{2})$/.exec(value||''); return m?Math.min(1439,+m[1]*60 + +m[2]):fallback; }
+async function checkPregnancyReminders(){
+  if(notificationPermission()!=='granted') return;
+  const now=new Date(), today=todayISO(), mins=minutesNow();
+  for(const p of DB.pregnancyProfiles){
+    const s=p.settings||{}, c=pregnancyToday(p);
+    const prenatalAt=parseClock(s.prenatalTime,540);
+    if(!c.prenatalDoneAt && mins>=prenatalAt){
+      const hourSlot=Math.floor((mins-prenatalAt)/60), key=`${today}-prenatal-${hourSlot}`;
+      if(s.lastPrenatalNotice!==key){
+        await showPulseNotification(`${p.name}: ${s.prenatalLabel||'Daily prenatal care'}`,'Please mark it done in Pulse. If it remains open, Pulse will remind again in one hour.',`pregnancy-prenatal-${p.id}`);
+        s.lastPrenatalNotice=key; p.settings=s; saveState();
+      }
+    }
+    const start=parseClock(s.waterStart,480), end=parseClock(s.waterEnd,1200), interval=Math.max(30,s.waterIntervalMin||120), goal=s.waterGoal||8;
+    if(mins>=start&&mins<=end&&(c.waterCups||0)<goal){
+      const slot=Math.floor((mins-start)/interval), key=`${today}-water-${slot}`;
+      if(slot>=0&&s.lastWaterNotice!==key){
+        await showPulseNotification(`${p.name}: Water reminder`,`${c.waterCups||0} of ${goal} cups logged today. Add a cup in Pulse when she drinks.`,`pregnancy-water-${p.id}`);
+        s.lastWaterNotice=key; p.settings=s; saveState();
+      }
+    }
+    for(const a of (p.appointments||[]).filter(x=>x.status==='scheduled')){
+      const appointment=new Date(`${a.date}T${a.time||'09:00'}:00`), hours=(appointment-now)/3600000;
+      const stage=hours>0&&hours<=2?'soon':hours>2&&hours<=26?'tomorrow':null;
+      const key=stage&&`${a.id}-${stage}`;
+      if(key&&a.lastNotice!==key){
+        await showPulseNotification(`${p.name}: ${a.reason||'Prenatal appointment'}`,`${stage==='soon'?'Coming up soon':'Upcoming'}: ${fmtDate(a.date)}${a.time?' at '+a.time:''}${a.location?' · '+a.location:''}`,`pregnancy-appointment-${a.id}`);
+        a.lastNotice=key; saveState();
+      }
+    }
+  }
 }
 
 /* ============================= FITNESS ============================= */
@@ -827,6 +939,9 @@ function renderModal(){
   else if(m.type==='view-task') inner = renderTaskDetailModal();
   else if(m.type==='edit-plan') inner = renderPlanModal();
   else if(m.type==='add-metric') inner = renderMetricModal();
+  else if(m.type==='pregnancy-profile') inner = renderPregnancyProfileModal();
+  else if(m.type==='pregnancy-journal') inner = renderPregnancyJournalModal();
+  else if(m.type==='pregnancy-appointment') inner = renderPregnancyAppointmentModal();
   else if(m.type==='confirm-end-session') inner = renderConfirmEndSession();
   return `<div class="modal-backdrop" data-act="close-modal-backdrop"><div class="modal" data-stop="1">
     <div class="modal-handle"></div>${inner}
@@ -937,6 +1052,48 @@ function renderMetricModal(){
     <div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Cancel</button>`;
 }
 
+function renderPregnancyProfileModal(){
+  const p=modal.id?DB.pregnancyProfiles.find(x=>x.id===modal.id):null, s=p?.settings||{};
+  return `<h2>${p?'Edit':'Create'} pregnancy profile</h2>
+    <div class="field"><label>Profile name</label><input id="ppName" maxlength="60" value="${esc(p?.name||'Her pregnancy')}" placeholder="e.g. Maya"></div>
+    <div class="field"><label>Estimated due date</label><input type="date" id="ppDueDate" value="${p?.dueDate||datePlusDays(245)}"><div style="font-size:.7rem;color:var(--muted);margin-top:.3rem">The starting estimate assumes about 5 weeks pregnant. Replace it with the care team’s estimated date.</div></div>
+    <div class="section-label">Daily clinician-directed care</div>
+    <div class="field"><label>Reminder label</label><input id="ppPrenatalLabel" maxlength="80" value="${esc(s.prenatalLabel||'Prenatal vitamin')}" placeholder="Use the exact care instruction"></div>
+    <div class="field"><label>Daily time</label><input type="time" id="ppPrenatalTime" value="${s.prenatalTime||'09:00'}"></div>
+    <div class="section-label">Water tracking</div>
+    <div class="btn-row"><div class="field" style="flex:1"><label>Daily cup goal</label><input type="number" id="ppWaterGoal" min="1" max="30" value="${s.waterGoal||8}"></div><div class="field" style="flex:1"><label>Remind every</label><select id="ppWaterInterval">${[30,60,90,120,180,240].map(n=>`<option value="${n}" ${n===(s.waterIntervalMin||120)?'selected':''}>${n<60?n+' min':n/60+' hr'}</option>`).join('')}</select></div></div>
+    <div class="btn-row"><div class="field" style="flex:1"><label>Start</label><input type="time" id="ppWaterStart" value="${s.waterStart||'08:00'}"></div><div class="field" style="flex:1"><label>Stop</label><input type="time" id="ppWaterEnd" value="${s.waterEnd||'20:00'}"></div></div>
+    <button class="btn primary" data-act="save-pregnancy-profile" data-id="${p?.id||''}">Save profile</button>
+    ${p&&DB.pregnancyProfiles.length>1?`<div style="height:.5rem"></div><button class="btn danger" data-act="delete-pregnancy-profile" data-id="${p.id}">Delete profile</button>`:''}
+    <div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Cancel</button>`;
+}
+function renderPregnancyJournalModal(){
+  const p=activePregnancyProfile(), e=modal.id?(p.journal||[]).find(x=>x.id===modal.id):null;
+  return `<h2>${e?'Edit':'New'} journal entry</h2>
+    <div class="field"><label>Date</label><input type="date" id="pjDate" value="${e?.date||todayISO()}"></div>
+    <div class="field"><label>How today feels</label><select id="pjMood"><option value="">Choose</option>${['Good','Calm','Tired','Nauseous','Anxious','Emotional','Unwell'].map(x=>`<option ${e?.mood===x?'selected':''}>${x}</option>`).join('')}</select></div>
+    <div class="field"><label>Symptoms or changes</label><textarea id="pjSymptoms" maxlength="1000" placeholder="Describe what happened; contact the care team for concerning symptoms">${esc(e?.symptoms||'')}</textarea></div>
+    <div class="field"><label>Journal</label><textarea id="pjNotes" maxlength="3000" style="min-height:8rem" placeholder="Thoughts, gratitude, questions, or memories">${esc(e?.notes||'')}</textarea></div>
+    <button class="btn primary" data-act="save-pregnancy-journal" data-id="${e?.id||''}">Save entry</button>
+    ${e?`<div style="height:.5rem"></div><button class="btn danger" data-act="delete-pregnancy-journal" data-id="${e.id}">Delete entry</button>`:''}
+    <div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Cancel</button>`;
+}
+function renderPregnancyAppointmentModal(){
+  const p=activePregnancyProfile(), a=modal.id?(p.appointments||[]).find(x=>x.id===modal.id):null;
+  return `<h2>${a?'Edit':'Add'} appointment</h2>
+    <div class="field"><label>Visit or purpose</label><input id="paReason" maxlength="100" value="${esc(a?.reason||'Prenatal appointment')}"></div>
+    <div class="btn-row"><div class="field" style="flex:1"><label>Date</label><input type="date" id="paDate" value="${a?.date||todayISO()}"></div><div class="field" style="flex:1"><label>Time</label><input type="time" id="paTime" value="${a?.time||''}"></div></div>
+    <div class="field"><label>Doctor, midwife, or clinic</label><input id="paProvider" maxlength="100" value="${esc(a?.provider||'')}"></div>
+    <div class="field"><label>Location</label><input id="paLocation" maxlength="160" value="${esc(a?.location||'')}"></div>
+    <div class="field"><label>Phone</label><input type="tel" id="paPhone" maxlength="40" value="${esc(a?.phone||'')}"></div>
+    <div class="field"><label>Questions to ask</label><textarea id="paQuestions" maxlength="2000" placeholder="One question per line">${esc(a?.questions||'')}</textarea></div>
+    <div class="field"><label>Visit notes and follow-up</label><textarea id="paNotes" maxlength="3000">${esc(a?.notes||'')}</textarea></div>
+    <div class="field"><label>Status</label><select id="paStatus">${['scheduled','completed','cancelled'].map(x=>`<option value="${x}" ${a?.status===x?'selected':''}>${x[0].toUpperCase()+x.slice(1)}</option>`).join('')}</select></div>
+    <button class="btn primary" data-act="save-pregnancy-appointment" data-id="${a?.id||''}">Save appointment</button>
+    ${a?`<div style="height:.5rem"></div><button class="btn danger" data-act="delete-pregnancy-appointment" data-id="${a.id}">Delete appointment</button>`:''}
+    <div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Cancel</button>`;
+}
+
 function renderHealthDetailModal(){
   const e = DB.healthEntries.find(x=>x.id===modal.id);
   if(!e) return `<h2>Not found</h2>`;
@@ -1026,6 +1183,9 @@ function wireEvents(){
   app.querySelectorAll('[data-plan-filter]').forEach(el=>{
     el.addEventListener('click', ()=>{ plannerFilter = el.getAttribute('data-plan-filter'); render(); });
   });
+  app.querySelectorAll('[data-preg-tab]').forEach(el=>el.addEventListener('click',()=>{pregnancyTab=el.getAttribute('data-preg-tab');render();}));
+  const pregnancyProfileSelect=app.querySelector('#pregnancyProfileSelect');
+  if(pregnancyProfileSelect) pregnancyProfileSelect.addEventListener('change',()=>{DB.settings.activePregnancyProfileId=pregnancyProfileSelect.value;saveState();render();});
 
   const startBtn = app.querySelector('[data-act="start-session"]');
   if(startBtn) startBtn.addEventListener('click', startSession);
@@ -1037,6 +1197,10 @@ function wireEvents(){
   app.querySelectorAll('[data-act="add-plan"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'edit-plan'})));
   app.querySelectorAll('[data-act="add-metric"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'add-metric'})));
   app.querySelectorAll('[data-act="scan-health"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'add-metric',scan:true})));
+  app.querySelectorAll('[data-act="add-pregnancy-profile"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-profile'})));
+  app.querySelectorAll('[data-act="edit-pregnancy-profile"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-profile',id:activePregnancyProfile()?.id})));
+  app.querySelectorAll('[data-act="add-pregnancy-journal"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-journal'})));
+  app.querySelectorAll('[data-act="add-pregnancy-appointment"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-appointment'})));
 
   app.querySelectorAll('[data-open-health]').forEach(el=>{
     el.addEventListener('click', ()=> openModal({type:'view-health', id: el.getAttribute('data-open-health')}));
@@ -1052,6 +1216,8 @@ function wireEvents(){
   });
   app.querySelectorAll('[data-open-plan]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'edit-plan',id:el.getAttribute('data-open-plan')})));
   app.querySelectorAll('[data-open-metric]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'add-metric',id:el.getAttribute('data-open-metric')})));
+  app.querySelectorAll('[data-open-pregnancy-journal]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-journal',id:el.getAttribute('data-open-pregnancy-journal')})));
+  app.querySelectorAll('[data-open-pregnancy-appointment]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-appointment',id:el.getAttribute('data-open-pregnancy-appointment')})));
   const resumeSession = app.querySelector('[data-act="resume-session"]');
   if(resumeSession) resumeSession.addEventListener('click', ()=>go({screen:'fitness-session'}));
 
@@ -1231,6 +1397,54 @@ function wireEvents(){
     runOcr.disabled=false;
   });
 
+  const savePregnancyProfile=app.querySelector('[data-act="save-pregnancy-profile"]');
+  if(savePregnancyProfile) savePregnancyProfile.addEventListener('click',()=>{
+    const name=document.getElementById('ppName').value.trim(); if(!name){alert('Add a profile name.');return;}
+    const id=savePregnancyProfile.getAttribute('data-id'), existing=DB.pregnancyProfiles.find(x=>x.id===id);
+    const settings={...(existing?.settings||{}),prenatalLabel:document.getElementById('ppPrenatalLabel').value.trim()||'Daily prenatal care',prenatalTime:document.getElementById('ppPrenatalTime').value||'09:00',waterGoal:Math.max(1,Math.min(30,parseInt(document.getElementById('ppWaterGoal').value)||8)),waterIntervalMin:parseInt(document.getElementById('ppWaterInterval').value)||120,waterStart:document.getElementById('ppWaterStart').value||'08:00',waterEnd:document.getElementById('ppWaterEnd').value||'20:00'};
+    const record={id:id||uid(),name,dueDate:document.getElementById('ppDueDate').value||null,createdAt:existing?.createdAt||Date.now(),settings,journal:existing?.journal||[],appointments:existing?.appointments||[],dailyChecks:existing?.dailyChecks||[]};
+    if(existing)Object.assign(existing,record);else DB.pregnancyProfiles.push(record);
+    DB.settings.activePregnancyProfileId=record.id; saveState(); closeModal();
+  });
+  const deletePregnancyProfile=app.querySelector('[data-act="delete-pregnancy-profile"]');
+  if(deletePregnancyProfile) deletePregnancyProfile.addEventListener('click',()=>{
+    if(!confirm('Delete this pregnancy profile and all of its journal, reminders, and appointments?'))return;
+    DB.pregnancyProfiles=DB.pregnancyProfiles.filter(x=>x.id!==deletePregnancyProfile.getAttribute('data-id'));DB.settings.activePregnancyProfileId=DB.pregnancyProfiles[0]?.id||null;saveState();closeModal();
+  });
+  const savePregnancyJournal=app.querySelector('[data-act="save-pregnancy-journal"]');
+  if(savePregnancyJournal) savePregnancyJournal.addEventListener('click',()=>{
+    const p=activePregnancyProfile(),id=savePregnancyJournal.getAttribute('data-id'),existing=p.journal.find(x=>x.id===id);
+    const record={id:id||uid(),date:document.getElementById('pjDate').value||todayISO(),mood:document.getElementById('pjMood').value,symptoms:document.getElementById('pjSymptoms').value.trim(),notes:document.getElementById('pjNotes').value.trim(),createdAt:existing?.createdAt||Date.now(),updatedAt:Date.now()};
+    if(existing)Object.assign(existing,record);else p.journal.push(record);saveState();closeModal();
+  });
+  const deletePregnancyJournal=app.querySelector('[data-act="delete-pregnancy-journal"]');
+  if(deletePregnancyJournal) deletePregnancyJournal.addEventListener('click',()=>{if(!confirm('Delete this journal entry?'))return;const p=activePregnancyProfile();p.journal=p.journal.filter(x=>x.id!==deletePregnancyJournal.getAttribute('data-id'));saveState();closeModal();});
+  const savePregnancyAppointment=app.querySelector('[data-act="save-pregnancy-appointment"]');
+  if(savePregnancyAppointment) savePregnancyAppointment.addEventListener('click',()=>{
+    const p=activePregnancyProfile(),id=savePregnancyAppointment.getAttribute('data-id'),existing=p.appointments.find(x=>x.id===id),date=document.getElementById('paDate').value;
+    if(!date){alert('Add the appointment date.');return;}
+    const record={id:id||uid(),reason:document.getElementById('paReason').value.trim()||'Prenatal appointment',date,time:document.getElementById('paTime').value,provider:document.getElementById('paProvider').value.trim(),location:document.getElementById('paLocation').value.trim(),phone:document.getElementById('paPhone').value.trim(),questions:document.getElementById('paQuestions').value.trim(),notes:document.getElementById('paNotes').value.trim(),status:document.getElementById('paStatus').value,createdAt:existing?.createdAt||Date.now(),lastNotice:existing?.lastNotice||null};
+    if(existing)Object.assign(existing,record);else p.appointments.push(record);saveState();closeModal();
+  });
+  const deletePregnancyAppointment=app.querySelector('[data-act="delete-pregnancy-appointment"]');
+  if(deletePregnancyAppointment) deletePregnancyAppointment.addEventListener('click',()=>{if(!confirm('Delete this appointment?'))return;const p=activePregnancyProfile();p.appointments=p.appointments.filter(x=>x.id!==deletePregnancyAppointment.getAttribute('data-id'));saveState();closeModal();});
+
+  const completePrenatal=app.querySelector('[data-act="complete-prenatal"]');
+  if(completePrenatal) completePrenatal.addEventListener('click',()=>{const p=activePregnancyProfile(),c=mutablePregnancyToday(p);c.prenatalDoneAt=Date.now();saveState();if('clearAppBadge'in navigator)navigator.clearAppBadge().catch(()=>{});render();});
+  const undoPrenatal=app.querySelector('[data-act="undo-prenatal"]');
+  if(undoPrenatal) undoPrenatal.addEventListener('click',()=>{mutablePregnancyToday(activePregnancyProfile()).prenatalDoneAt=null;saveState();render();});
+  const waterPlus=app.querySelector('[data-act="water-plus"]');
+  if(waterPlus) waterPlus.addEventListener('click',()=>{const c=mutablePregnancyToday(activePregnancyProfile());c.waterCups=Math.min(50,(c.waterCups||0)+1);saveState();render();});
+  const waterMinus=app.querySelector('[data-act="water-minus"]');
+  if(waterMinus) waterMinus.addEventListener('click',()=>{const c=mutablePregnancyToday(activePregnancyProfile());c.waterCups=Math.max(0,(c.waterCups||0)-1);saveState();render();});
+  const enablePregnancyNotifications=app.querySelector('[data-act="enable-pregnancy-notifications"]');
+  if(enablePregnancyNotifications) enablePregnancyNotifications.addEventListener('click',async()=>{
+    if(!('Notification'in window)){alert('Notifications are not supported on this phone browser.');return;}
+    const permission=await Notification.requestPermission();
+    if(permission==='granted'){await checkPregnancyReminders();alert('Notifications enabled. Keep Pulse installed on the Home Screen.');}
+    else alert('Notifications were not allowed. You can enable them later in the phone’s notification settings.');render();
+  });
+
   const exportBtn = app.querySelector('[data-act="export-data"]');
   if(exportBtn) exportBtn.addEventListener('click', ()=>{
     const payload = {app:'Pulse', version:1, exportedAt:new Date().toISOString(), data:DB};
@@ -1300,10 +1514,13 @@ if(session && (session.phase==='rest-station' || session.phase==='rest-round')){
 
 /* register service worker for notifications */
 if('serviceWorker' in navigator){
-  window.addEventListener('load', ()=>{
-    navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  window.addEventListener('load', async ()=>{
+    await navigator.serviceWorker.register('./sw.js').catch(()=>null);
+    checkPregnancyReminders();
   });
 }
+setInterval(checkPregnancyReminders,60000);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')checkPregnancyReminders();});
 </script>
 </body>
 </html>
