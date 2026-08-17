@@ -1,7 +1,8 @@
 // Service worker for Pulse — Personal Tracker: offline app shell and notifications.
 
 const APP_SCOPE = './index.html';
-const CACHE_NAME = 'pulse-shell-v3';
+const PREGNANCY_SCOPE = './index.html?screen=pregnancy';
+const CACHE_NAME = 'pulse-shell-v4';
 const APP_FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', event => {
@@ -43,6 +44,7 @@ self.addEventListener('message', event => {
     icon: './icon-192.png',
     badge: './icon-192.png',
     requireInteraction: false,
+    renotify: !!tag,
   });
 });
 
@@ -51,9 +53,10 @@ self.addEventListener('notificationclick', event => {
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
       for (const client of list) {
+        if ('navigate' in client) return client.navigate(PREGNANCY_SCOPE).then(() => client.focus());
         if ('focus' in client) return client.focus();
       }
-      if (self.clients.openWindow) return self.clients.openWindow(APP_SCOPE);
+      if (self.clients.openWindow) return self.clients.openWindow(PREGNANCY_SCOPE);
       return undefined;
     })
   );
