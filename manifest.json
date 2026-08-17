@@ -1,16 +1,13 @@
 {
-  "id": "./sakhi-pregnancy-companion",
-  "name": "Sakhi — Pregnancy Companion",
-  "short_name": "Sakhi",
-  "description": "A gentle private pregnancy journal, reminder, hydration, movement, weight, and appointment companion.",
+  "name": "Pulse — Personal Tracker",
+  "short_name": "Pulse",
   "start_url": "./index.html",
-  "scope": "./",
   "display": "standalone",
-  "background_color": "#130b12",
-  "theme_color": "#51233e",
+  "background_color": "#0a0a0c",
+  "theme_color": "#0a0a0c",
   "orientation": "portrait",
   "icons": [
-    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
-    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
   ]
 }
