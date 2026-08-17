@@ -4,10 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0a0a0c">
+<meta id="appleAppTitle" name="apple-mobile-web-app-title" content="Pulse">
 <title>Pulse — Personal Tracker</title>
-<link rel="manifest" href="./manifest.json">
+<link id="appManifest" rel="manifest" href="./manifest.json">
 <link rel="icon" href="./icon-192.png">
 <link rel="apple-touch-icon" href="./icon-192.png">
+<script>
+if(new URLSearchParams(location.search).get('mode')==='pregnancy'){
+  document.title='Sakhi — Pregnancy Companion';
+  document.getElementById('appManifest').href='./sakhi-manifest.json';
+  document.getElementById('appleAppTitle').content='Sakhi';
+}
+</script>
 <style>
 :root{
   --bg:#0a0a0c;
@@ -301,12 +309,15 @@ function nextWorkoutType(){
 function workoutByKey(k){ return DB.workoutPlans.find(p=>p.id===k || p.key===k) || WORKOUT_A; }
 
 /* ============================= ROUTER STATE ============================= */
-const requestedScreen=new URLSearchParams(location.search).get('screen');
-let view = { screen:['home','fitness','health','planner','data','pregnancy'].includes(requestedScreen)?requestedScreen:'home' };
+const URL_PARAMS=new URLSearchParams(location.search);
+const PREGNANCY_MODE=URL_PARAMS.get('mode')==='pregnancy';
+const APP_NAME=PREGNANCY_MODE?'Sakhi':'Pulse';
+const requestedScreen=URL_PARAMS.get('screen');
+let view = { screen:PREGNANCY_MODE?'pregnancy':(['home','fitness','health','planner','data','pregnancy'].includes(requestedScreen)?requestedScreen:'home') };
 let session = loadSession(); // live workout session state, restored after reloads
 let modal = null;   // {type,...}
 
-function go(v){ view = v; render(); }
+function go(v){ view = PREGNANCY_MODE?{screen:'pregnancy'}:v; render(); }
 function openModal(m){ modal = m; render(); }
 function closeModal(){ modal = null; render(); }
 
@@ -371,7 +382,7 @@ function screenTitle(){
     health:['Health',''],
     planner:['Day Planner',''],
     data:['Data & Backup',''],
-    pregnancy:['Pregnancy Companion',''],
+    pregnancy:[PREGNANCY_MODE?'Sakhi':'Pregnancy Companion',''],
   };
   return map[view.screen] || ['Pulse',''];
 }
@@ -379,7 +390,7 @@ function screenTitle(){
 function renderScreen(){
   if(view.screen==='fitness-session' && session) return renderSessionScreen();
   const [title] = screenTitle();
-  const showBack = view.screen !== 'home';
+  const showBack = !PREGNANCY_MODE && view.screen !== 'home';
   let body = '';
   if(view.screen==='home') body = renderHome();
   else if(view.screen==='fitness') body = renderFitness();
@@ -635,7 +646,7 @@ function renderPregnancyToday(p){
       <div class="stat-row" style="margin-bottom:.7rem"><div class="stat-tile"><div class="n">${(movement.steps||0).toLocaleString()}</div><div class="l">Steps</div></div><div class="stat-tile"><div class="n">${movement.yogaMin||0}</div><div class="l">Yoga min</div></div><div class="stat-tile"><div class="n">${movement.meditationMin||0}</div><div class="l">Meditation min</div></div></div><button class="btn" data-act="log-pregnancy-wellness">Log today</button></div>
     <div class="section-label">Weight trend</div><div class="card"><div class="list-row" style="border:0;padding-top:0"><div class="main"><div class="title">${latestWeight?latestWeight.weightKg+' kg':'No weight logged'}</div><div class="meta">${latestWeight?'Last logged '+fmtDate(latestWeight.date):'Optional—log only if it feels useful or the care team requested it.'}</div></div></div>${weightTrend.length>1?sparkline(weightTrend.map(x=>x.weightKg),'#ffb8dc'):''}<button class="btn" data-act="log-pregnancy-weight">${latestWeight?'Add weight':'Log weight'}</button></div>
     <button class="btn ${notificationPermission()==='granted'?'':'primary'}" data-act="enable-pregnancy-notifications">${notificationPermission()==='granted'?'Notifications enabled':notificationPermission()==='unsupported'?'Notifications unavailable':'Enable notifications'}</button>
-    <p style="font-size:.72rem;color:var(--muted);line-height:1.45">Hourly repeats work while Pulse can run and catch up when reopened. Guaranteed closed-app delivery requires a future push service.</p>
+    <p style="font-size:.72rem;color:var(--muted);line-height:1.45">Hourly repeats work while ${APP_NAME} can run and catch up when reopened. Guaranteed closed-app delivery requires a future push service.</p>
     <div class="section-label">Next appointment</div>${next?`<div class="card" data-open-pregnancy-appointment="${next.id}"><div class="title">${esc(next.reason||'Prenatal appointment')}</div><div class="meta">${fmtDate(next.date)}${next.time?' · '+next.time:''}${next.provider?' · '+esc(next.provider):''}</div></div>`:emptyBlock('📅','No appointment scheduled','Add the next prenatal visit and questions to ask.')}`;
 }
 function renderPregnancyJournal(p){
@@ -667,7 +678,7 @@ async function checkPregnancyReminders(){
     if(!c.prenatalDoneAt && mins>=prenatalAt){
       const hourSlot=Math.floor((mins-prenatalAt)/60), key=`${today}-prenatal-${hourSlot}`;
       if(s.lastPrenatalNotice!==key){
-        await showPulseNotification(`${p.name}: ${s.prenatalLabel||'Daily prenatal care'}`,'Please mark it done in Pulse. If it remains open, Pulse will remind again in one hour.',`pregnancy-prenatal-${p.id}`);
+        await showPulseNotification(`${p.name}: ${s.prenatalLabel||'Daily prenatal care'}`,`Please mark it done in ${APP_NAME}. If it remains open, ${APP_NAME} will remind again in one hour.`,`pregnancy-prenatal-${p.id}`);
         s.lastPrenatalNotice=key; p.settings=s; saveState();
       }
     }
@@ -675,7 +686,7 @@ async function checkPregnancyReminders(){
     if(mins>=start&&mins<=end&&amount<goal){
       const slot=Math.floor((mins-start)/interval), key=`${today}-water-${slot}`;
       if(slot>=0&&s.lastWaterNotice!==key){
-        await showPulseNotification(`${p.name}: Water reminder`,`${amount.toLocaleString()} of ${goal.toLocaleString()} ml logged today. Add ml or a bottle in Pulse when she drinks.`,`pregnancy-water-${p.id}`);
+        await showPulseNotification(`${p.name}: Water reminder`,`${amount.toLocaleString()} of ${goal.toLocaleString()} ml logged today. Add ml or a bottle in ${APP_NAME} when she drinks.`,`pregnancy-water-${p.id}`);
         s.lastWaterNotice=key; p.settings=s; saveState();
       }
     }
@@ -1610,7 +1621,7 @@ function wireEvents(){
   if(enablePregnancyNotifications) enablePregnancyNotifications.addEventListener('click',async()=>{
     if(!('Notification'in window)){alert('Notifications are not supported on this phone browser.');return;}
     const permission=await Notification.requestPermission();
-    if(permission==='granted'){await checkPregnancyReminders();alert('Notifications enabled. Keep Pulse installed on the Home Screen.');}
+    if(permission==='granted'){await checkPregnancyReminders();alert(`Notifications enabled. Keep ${APP_NAME} installed on the Home Screen.`);}
     else alert('Notifications were not allowed. You can enable them later in the phone’s notification settings.');render();
   });
 
