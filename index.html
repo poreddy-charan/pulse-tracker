@@ -215,6 +215,7 @@ function enforceDataLimits(){
     p.appointments=Array.isArray(p.appointments)?p.appointments.slice(-500):[];
     p.dailyChecks=Array.isArray(p.dailyChecks)?p.dailyChecks.slice(-500):[];
     p.wellnessLogs=Array.isArray(p.wellnessLogs)?p.wellnessLogs.slice(-1000):[];
+    p.weightLogs=Array.isArray(p.weightLogs)?p.weightLogs.slice(-500):[];
   });
 }
 function saveState(){
@@ -276,7 +277,7 @@ const WORKOUT_B = {
 function ensureModernData(){
   if(!Array.isArray(DB.dailyMetrics)) DB.dailyMetrics=[];
   if(!Array.isArray(DB.pregnancyProfiles)) DB.pregnancyProfiles=[];
-  DB.pregnancyProfiles.forEach(p=>{p.journal=Array.isArray(p.journal)?p.journal:[];p.appointments=Array.isArray(p.appointments)?p.appointments:[];p.dailyChecks=Array.isArray(p.dailyChecks)?p.dailyChecks:[];p.wellnessLogs=Array.isArray(p.wellnessLogs)?p.wellnessLogs:[];p.settings=p.settings||{};});
+  DB.pregnancyProfiles.forEach(p=>{p.journal=Array.isArray(p.journal)?p.journal:[];p.appointments=Array.isArray(p.appointments)?p.appointments:[];p.dailyChecks=Array.isArray(p.dailyChecks)?p.dailyChecks:[];p.wellnessLogs=Array.isArray(p.wellnessLogs)?p.wellnessLogs:[];p.weightLogs=Array.isArray(p.weightLogs)?p.weightLogs:[];p.settings=p.settings||{};});
   if(!Array.isArray(DB.workoutPlans) || !DB.workoutPlans.length){
     DB.workoutPlans=[WORKOUT_A,WORKOUT_B].map(w=>({
       id:'plan-'+w.key, name:w.label, key:w.key, builtIn:true,
@@ -446,7 +447,7 @@ function renderHome(){
 
 /* ============================= DATA ============================= */
 function renderData(){
-  const counts = [DB.workoutSessions.length, DB.cardioLogs.length, DB.activityLogs.length, DB.healthEntries.length, DB.dailyMetrics.length, DB.tasks.length, DB.pregnancyProfiles.reduce((n,p)=>n+(p.journal?.length||0)+(p.appointments?.length||0)+(p.dailyChecks?.length||0)+(p.wellnessLogs?.length||0),0)];
+  const counts = [DB.workoutSessions.length, DB.cardioLogs.length, DB.activityLogs.length, DB.healthEntries.length, DB.dailyMetrics.length, DB.tasks.length, DB.pregnancyProfiles.reduce((n,p)=>n+(p.journal?.length||0)+(p.appointments?.length||0)+(p.dailyChecks?.length||0)+(p.wellnessLogs?.length||0)+(p.weightLogs?.length||0),0)];
   const storageKB = Math.ceil(new Blob([JSON.stringify(DB)]).size/1024);
   return `
   <div class="card">
@@ -468,6 +469,126 @@ function renderData(){
 
 /* ============================= PREGNANCY COMPANION ============================= */
 let pregnancyTab='today';
+const WEEKLY_SIZES=['poppy seed','sesame seed','lentil','blueberry','raspberry','grape','kumquat','fig','lime','lemon','peach','apple','avocado','pear','bell pepper','mango','banana','carrot','papaya','grapefruit','ear of corn','rutabaga','zucchini','cauliflower','eggplant','butternut squash','cabbage','coconut','jicama','pineapple','cantaloupe','honeydew melon','head of romaine','bunch of Swiss chard','leek','small watermelon','pumpkin'];
+const MILESTONE_NOTES=[
+  ['A tiny cluster of cells is settling in and beginning an extraordinary journey.','Early support structures are developing while the embryo remains wonderfully small.','The foundations of the brain, spine, and cardiac tissue are beginning to take shape.','Small limb buds and early facial structures are starting to emerge.','Early organs and tiny fingers and toes continue their first stages of development.'],
+  ['The body is lengthening and early structures are becoming more recognizable.','Limbs and joints continue forming while many internal systems develop.','Tiny movements may begin even though they cannot be felt yet.','Major structures are present and will keep growing and refining.'],
+  ['Bones are beginning to harden and the body is becoming more proportioned.','The neck and lower limbs are more defined as coordinated movement develops.','Hearing structures are developing and facial features continue refining.','Growth is steady while bones, lungs, and movement mature.'],
+  ['Movement is becoming more coordinated as the nervous system develops.','Hearing continues developing and the body is growing stronger.','Recognizable facial features may be visible during an ultrasound.','The digestive system is active and a soft protective hair covering is developing.'],
+  ['Kicks and turns are getting stronger as muscles develop.','Sucking practice and hand-to-mouth movements may be happening.','Fingerprints and footprints are beginning to form.','The lungs continue maturing while the body gradually adds fat.'],
+  ['Responses to familiar sounds and voices may become noticeable.','The nervous system and lungs continue their important development.','The eyes may open and close as more body fat develops.','Movements are stronger and the skin is gradually becoming smoother.'],
+  ['Stretching, kicking, and grasping motions have more strength.','The eyes can notice changes in light while rapid growth continues.','Bone marrow is taking on more blood-cell production.','Major development is well advanced and steady weight gain becomes a focus.'],
+  ['The brain is developing rapidly while the body fills out.','Bones strengthen, while the skull stays flexible for birth.','Fingernails are reaching the fingertips and limbs look rounder.','Many babies begin settling into a head-down position around this stage.'],
+  ['The final weeks bring continued development of the lungs, brain, and nervous system.','The body keeps adding fat for warmth after birth.','Space is snug, but her usual pattern of movement should continue.','Around the estimated due date, baby is finishing development and getting ready to meet you.']
+];
+const DAILY_QUOTES=[
+  "Today only asks for today.",
+  "Small acts of care are already acts of love.",
+  "Rest is productive when a body is building new life.",
+  "You do not need to do everything—just the next gentle thing.",
+  "There is strength in moving slowly and listening inward.",
+  "Every ordinary day is part of an extraordinary story.",
+  "Let care be simple: breathe, drink, rest, and begin again.",
+  "Your pace is the right pace for this season.",
+  "A quiet moment can be enough for today.",
+  "Progress can look like rest, patience, and one checked box.",
+  "Be as kind to yourself as you already are to this little life.",
+  "One day, one week, one loving step at a time.",
+  "You are allowed to feel grateful and tired at the same time.",
+  "There is no perfect day—only a cared-for one.",
+  "Your body is doing important work, even on the quietest days.",
+  "Baby is growing in moments you can see and moments you cannot.",
+  "Motherhood can be tender, messy, tiring, and beautiful all at once.",
+  "Each gentle breath is a small return to yourself.",
+  "You and baby are already learning a rhythm together.",
+  "Resting is one way of caring for the whole family.",
+  "Love is making room before the new little one arrives.",
+  "Your growing family is being built in ordinary moments.",
+  "Your three-year-old is becoming an older sibling one day at a time.",
+  "A sibling story begins long before the first hello.",
+  "Little hands may soon reach for even littler hands.",
+  "This baby already has an older sibling waiting in the story.",
+  "A family does not need perfect days to grow strong roots.",
+  "Your home is growing in love before it grows in noise.",
+  "One child taught your heart to love; another will show it new rooms.",
+  "There is room in your heart for every version of motherhood.",
+  "An older sibling's questions are another way love gets ready.",
+  "A cuddle with your three-year-old is care for both of you.",
+  "Pregnancy and parenting can share the same gentle day.",
+  "What you managed today is enough for today.",
+  "Some days glow; other days simply carry you forward.",
+  "Gentle choices still count as meaningful progress.",
+  "A cup of water can be a quiet promise to yourself.",
+  "One completed reminder is worth celebrating.",
+  "A single journal line can hold a whole day.",
+  "Every question saved for an appointment is an act of care.",
+  "Asking for help is part of caring for your family.",
+  "Support turns a heavy day into a shared one.",
+  "You deserve to receive care as freely as you give it.",
+  "Feeling tired is not the same as falling short.",
+  "A slow day can still be full of growth.",
+  "Patience with yourself is part of preparing for baby.",
+  "Your body is adapting; your kindness can adapt with it.",
+  "Baby needs a cared-for mother, not a perfect one.",
+  "Kindness can be the most useful routine of the day.",
+  "One peaceful minute belongs entirely to you.",
+  "Inhale a little calm; exhale a little pressure.",
+  "A hand on your belly can be a tiny family gathering.",
+  "One smile from your three-year-old can soften a long day.",
+  "The memories forming now may be simple, but they are still precious.",
+  "Your older child is not losing love; the family is growing more of it.",
+  "A new baby does not replace an old rhythm—it adds another beat.",
+  "Sibling bonds begin with stories, questions, and patient little moments.",
+  "Preparing for baby is more about love than having every item ready.",
+  "You are allowed to ask the same question more than once.",
+  "You are allowed to have more than one feeling at a time.",
+  "Excitement and uncertainty can sit beside each other.",
+  "Being strong does not mean never needing rest.",
+  "Receiving care is a form of strength.",
+  "Listening to your body is useful, not selfish.",
+  "A gentle boundary can protect a peaceful day.",
+  "A nap can be part of the plan.",
+  "A simple meal and a quiet evening can be plenty.",
+  "A few mindful steps can make space for a calmer breath.",
+  "Every sip is a small pause for care.",
+  "Meditation does not require silence—just one moment of attention.",
+  "Movement can be gentle, joyful, and guided by what feels right today.",
+  "Each new week is one more page in your family's story.",
+  "Milestones are reminders to wonder, not deadlines to compare.",
+  "A due date is a guide; love does not follow a calendar.",
+  "Every baby grows along a story that is uniquely their own.",
+  "Every mother moves through pregnancy in her own way.",
+  "You do not need to compare this pregnancy with anyone else's.",
+  "Today is a life being lived, not a checklist to finish.",
+  "A missed task can wait; tomorrow offers another beginning.",
+  "A reminder is an invitation to care, not a reason for guilt.",
+  "Notice what you completed before noticing what remains.",
+  "Your three-year-old can help in tiny ways and still feel wonderfully important.",
+  "Telling your older child baby stories makes room for curiosity and love.",
+  "Save the questions that matter; you do not have to hold them all in mind.",
+  "You do not need a photograph for a moment to matter.",
+  "A quiet journal entry can become a gift to your future self.",
+  "Family laughter is preparation too.",
+  "Love does not divide when a family grows—it learns to multiply.",
+  "The arms that hold your first child are learning another kind of welcome.",
+  "Your home's sounds may change, but its center can remain love.",
+  "One day, your children may share a joke only siblings understand.",
+  "For today, baby is close and your three-year-old is close enough to hug.",
+  "Motherhood is expanding, not starting over.",
+  "A growing family is teamwork made from many small kindnesses.",
+  "Let someone help with one thing today.",
+  "Come back to one slow breath whenever the day feels crowded.",
+  "This season is temporary, even when a day feels long.",
+  "You are already enough for the family that is growing around you.",
+  "Tomorrow will bring a new thought; today can keep this gentle one.",
+  "You are growing a baby, a family, and a new version of yourself."
+];
+function milestoneForWeek(week){
+  const w=Math.max(4,Math.min(40,week||4)), ranges=[[4,8],[9,12],[13,16],[17,20],[21,24],[25,28],[29,32],[33,36],[37,40]];
+  const ri=ranges.findIndex(([a,b])=>w>=a&&w<=b), [start]=ranges[ri];
+  const size=WEEKLY_SIZES[w-4]; return {week:w,size,article:/^[aeiou]/i.test(size)?'an':'a',note:MILESTONE_NOTES[ri][w-start]};
+}
+function dailyQuote(){ return DAILY_QUOTES[Math.floor(new Date(todayISO()+'T12:00:00').getTime()/86400000)%DAILY_QUOTES.length]; }
 function activePregnancyProfile(){
   return DB.pregnancyProfiles.find(p=>p.id===DB.settings.activePregnancyProfileId)||DB.pregnancyProfiles[0]||null;
 }
@@ -495,19 +616,24 @@ function renderPregnancy(){
 function renderPregnancyToday(p){
   const c=pregnancyToday(p), s=p.settings||{}, goal=s.waterGoalMl||(s.waterGoal||8)*250, bottle=s.bottleSizeMl||500, amount=c.waterMl??(c.waterCups||0)*250, pct=Math.min(100,Math.round(amount/goal*100));
   const movement=(p.wellnessLogs||[]).find(x=>x.date===todayISO())||{};
-  const recentMovement=[...(p.wellnessLogs||[])].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,7);
+  const week=pregnancyWeek(p), milestone=milestoneForWeek(week?.week||4);
+  const waterTrend=[...(p.dailyChecks||[])].sort((a,b)=>a.date.localeCompare(b.date)).slice(-14).map(x=>x.waterMl??(x.waterCups||0)*250).filter(x=>x>0);
+  const weightTrend=[...(p.weightLogs||[])].sort((a,b)=>a.date.localeCompare(b.date)).slice(-20), latestWeight=weightTrend.at(-1);
   const next=[...(p.appointments||[])].filter(a=>a.status==='scheduled'&&a.date>=todayISO()).sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time))[0];
-  return `<div class="section-label">Daily care</div>
+  return `<div class="card" style="background:linear-gradient(135deg,#40263a,var(--surface))"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:#ffb8dc">Week ${milestone.week}</div><div style="font-size:1.05rem;font-weight:700;margin:.3rem 0">About the size of ${milestone.article} ${milestone.size}</div><div style="font-size:.8rem;color:var(--muted);line-height:1.45">${milestone.note}</div><div style="font-size:.65rem;color:var(--muted);margin-top:.55rem">Playful comparison only—growth varies and clinical measurements are different.</div></div>
+    <div class="card" style="text-align:center;padding:.9rem 1.2rem"><div style="font-size:1.35rem;color:#ffb8dc">“</div><div style="font-size:.9rem;line-height:1.5">${dailyQuote()}</div><div style="font-size:.65rem;color:var(--muted);margin-top:.4rem;text-transform:uppercase;letter-spacing:.08em">Today’s gentle thought</div></div>
+    <div class="section-label">Daily care</div>
     <div class="card"><div class="list-row" style="padding-top:0"><div class="main"><div class="title">${esc(s.prenatalLabel||'Daily prenatal care')}</div><div class="meta">Scheduled ${s.prenatalTime||'09:00'} · repeat hourly until marked done</div></div><span class="pill ${c.prenatalDoneAt?'done':'open'}">${c.prenatalDoneAt?'Done':'Due'}</span></div>
     ${c.prenatalDoneAt?`<button class="btn ghost" data-act="undo-prenatal">Marked done ${new Date(c.prenatalDoneAt).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} · Undo</button>`:`<button class="btn primary" data-act="complete-prenatal">Mark done today</button>`}</div>
     <div class="card"><div class="list-row" style="padding-top:0"><div class="main"><div class="title">Water</div><div class="meta">Personal goal: ${goal.toLocaleString()} ml · ${bottle} ml bottle · every ${s.waterIntervalMin||120} minutes</div></div><div class="val">${amount.toLocaleString()} ml</div></div>
       <div style="height:.45rem;background:var(--surface-2);border-radius:99px;overflow:hidden;margin:.3rem 0 .8rem"><div style="height:100%;width:${pct}%;background:var(--accent)"></div></div>
       <div style="font-size:.72rem;color:var(--muted);margin-bottom:.6rem">Equivalent to ${(amount/bottle).toFixed(1)} bottle${Math.abs(amount/bottle-1)<.01?'':'s'}.</div>
+      ${waterTrend.length>1?`<div style="font-size:.68rem;color:var(--muted);margin-top:.5rem">Recent logged-water trend</div>${sparkline(waterTrend,'#5eead4')}`:''}
       <div class="btn-row"><button class="btn" data-water-add="-250">− 250 ml</button><button class="btn" data-water-add="250">+ 250 ml</button><button class="btn primary" data-water-add="${bottle}">+ Bottle</button></div>
       <div class="btn-row" style="margin-top:.5rem"><div class="field" style="flex:1;margin:0"><input type="number" id="waterCustomMl" inputmode="numeric" min="1" max="3000" placeholder="Custom ml"></div><button class="btn" style="flex:0 0 auto" data-act="water-custom">Add</button></div></div>
     <div class="card"><div class="list-row" style="padding-top:0"><div class="main"><div class="title">Movement & mindfulness</div><div class="meta">Steps, walking, yoga, meditation, or clinician-approved prenatal exercise</div></div></div>
       <div class="stat-row" style="margin-bottom:.7rem"><div class="stat-tile"><div class="n">${(movement.steps||0).toLocaleString()}</div><div class="l">Steps</div></div><div class="stat-tile"><div class="n">${movement.yogaMin||0}</div><div class="l">Yoga min</div></div><div class="stat-tile"><div class="n">${movement.meditationMin||0}</div><div class="l">Meditation min</div></div></div><button class="btn" data-act="log-pregnancy-wellness">Log today</button></div>
-    ${recentMovement.length?`<div class="section-label">Recent movement</div>${recentMovement.map(x=>`<div class="card" data-open-pregnancy-wellness="${x.date}" style="margin-bottom:.5rem"><div class="list-row" style="border:0;padding:0"><div class="main"><div class="title">${fmtDate(x.date)}</div><div class="meta">${(x.steps||0).toLocaleString()} steps${x.walkingMin?' · '+x.walkingMin+'m walk':''}${x.yogaMin?' · '+x.yogaMin+'m yoga':''}${x.meditationMin?' · '+x.meditationMin+'m meditation':''}</div></div><div class="chev">›</div></div></div>`).join('')}`:''}
+    <div class="section-label">Weight trend</div><div class="card"><div class="list-row" style="border:0;padding-top:0"><div class="main"><div class="title">${latestWeight?latestWeight.weightKg+' kg':'No weight logged'}</div><div class="meta">${latestWeight?'Last logged '+fmtDate(latestWeight.date):'Optional—log only if it feels useful or the care team requested it.'}</div></div></div>${weightTrend.length>1?sparkline(weightTrend.map(x=>x.weightKg),'#ffb8dc'):''}<button class="btn" data-act="log-pregnancy-weight">${latestWeight?'Add weight':'Log weight'}</button></div>
     <button class="btn ${notificationPermission()==='granted'?'':'primary'}" data-act="enable-pregnancy-notifications">${notificationPermission()==='granted'?'Notifications enabled':notificationPermission()==='unsupported'?'Notifications unavailable':'Enable notifications'}</button>
     <p style="font-size:.72rem;color:var(--muted);line-height:1.45">Hourly repeats work while Pulse can run and catch up when reopened. Guaranteed closed-app delivery requires a future push service.</p>
     <div class="section-label">Next appointment</div>${next?`<div class="card" data-open-pregnancy-appointment="${next.id}"><div class="title">${esc(next.reason||'Prenatal appointment')}</div><div class="meta">${fmtDate(next.date)}${next.time?' · '+next.time:''}${next.provider?' · '+esc(next.provider):''}</div></div>`:emptyBlock('📅','No appointment scheduled','Add the next prenatal visit and questions to ask.')}`;
@@ -951,6 +1077,7 @@ function renderModal(){
   else if(m.type==='pregnancy-journal') inner = renderPregnancyJournalModal();
   else if(m.type==='pregnancy-appointment') inner = renderPregnancyAppointmentModal();
   else if(m.type==='pregnancy-wellness') inner = renderPregnancyWellnessModal();
+  else if(m.type==='pregnancy-weight') inner = renderPregnancyWeightModal();
   else if(m.type==='confirm-end-session') inner = renderConfirmEndSession();
   return `<div class="modal-backdrop" data-act="close-modal-backdrop"><div class="modal" data-stop="1">
     <div class="modal-handle"></div>${inner}
@@ -1104,7 +1231,7 @@ function renderPregnancyAppointmentModal(){
     <div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Cancel</button>`;
 }
 function renderPregnancyWellnessModal(){
-  const p=activePregnancyProfile(), x=(p.wellnessLogs||[]).find(v=>v.date===(modal.date||todayISO()))||{};
+  const p=activePregnancyProfile(), list=[...(p.wellnessLogs||[])].sort((a,b)=>b.date.localeCompare(a.date)), x=list.find(v=>v.date===(modal.date||todayISO()))||{};
   return `<h2>Movement & mindfulness</h2>
     <div class="field"><label>Date</label><input type="date" id="pwDate" value="${x.date||todayISO()}"></div>
     <div class="field"><label>Steps</label><input type="number" id="pwSteps" inputmode="numeric" min="0" max="100000" value="${x.steps??''}"></div>
@@ -1112,7 +1239,15 @@ function renderPregnancyWellnessModal(){
     <div class="btn-row"><div class="field" style="flex:1"><label>Meditation (min)</label><input type="number" id="pwMeditation" min="0" max="600" value="${x.meditationMin??''}"></div><div class="field" style="flex:1"><label>Other approved exercise (min)</label><input type="number" id="pwExercise" min="0" max="600" value="${x.prenatalExerciseMin??''}"></div></div>
     <div class="field"><label>Energy or notes</label><textarea id="pwNotes" maxlength="1000" placeholder="How it felt, modifications, or something to discuss with the care team">${esc(x.notes||'')}</textarea></div>
     <div class="card" style="font-size:.75rem;color:var(--muted);line-height:1.45">Only log activities her obstetric care professional says are appropriate. Stop and contact the care team for concerning symptoms during activity.</div>
-    <button class="btn primary" data-act="save-pregnancy-wellness">Save log</button>${x.id?`<div style="height:.5rem"></div><button class="btn danger" data-act="delete-pregnancy-wellness" data-id="${x.id}">Delete log</button>`:''}<div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Cancel</button>`;
+    <button class="btn primary" data-act="save-pregnancy-wellness">Save log</button>${x.id?`<div style="height:.5rem"></div><button class="btn danger" data-act="delete-pregnancy-wellness" data-id="${x.id}">Delete log</button>`:''}
+    ${list.length?`<div class="section-label">Recent entries</div><div class="card">${list.slice(0,7).map(v=>`<div class="list-row"><div class="main"><div class="title">${fmtDate(v.date)}</div><div class="meta">${(v.steps||0).toLocaleString()} steps${v.walkingMin?' · '+v.walkingMin+'m walk':''}${v.yogaMin?' · '+v.yogaMin+'m yoga':''}${v.meditationMin?' · '+v.meditationMin+'m meditation':''}</div></div></div>`).join('')}</div>`:''}<div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Close</button>`;
+}
+function renderPregnancyWeightModal(){
+  const p=activePregnancyProfile(), list=[...(p.weightLogs||[])].sort((a,b)=>b.date.localeCompare(a.date)), today=list.find(x=>x.date===todayISO());
+  return `<h2>Weight</h2><div class="btn-row"><div class="field" style="flex:1"><label>Date</label><input type="date" id="pwtDate" value="${todayISO()}"></div><div class="field" style="flex:1"><label>Weight (kg)</label><input type="number" step="0.1" min="1" max="500" id="pwtValue" inputmode="decimal" value="${today?.weightKg??''}"></div></div>
+    <button class="btn primary" data-act="save-pregnancy-weight">Save weight</button>
+    ${list.length?`<div class="section-label">Recent entries</div><div class="card">${list.slice(0,12).map(x=>`<div class="list-row"><div class="main"><div class="title">${fmtDate(x.date)}</div></div><div class="val">${x.weightKg} kg</div><button class="back-btn" data-delete-pregnancy-weight="${x.id}" aria-label="Delete weight">×</button></div>`).join('')}</div>`:''}
+    <div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Close</button>`;
 }
 
 function renderHealthDetailModal(){
@@ -1223,6 +1358,7 @@ function wireEvents(){
   app.querySelectorAll('[data-act="add-pregnancy-journal"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-journal'})));
   app.querySelectorAll('[data-act="add-pregnancy-appointment"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-appointment'})));
   app.querySelectorAll('[data-act="log-pregnancy-wellness"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-wellness'})));
+  app.querySelectorAll('[data-act="log-pregnancy-weight"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-weight'})));
 
   app.querySelectorAll('[data-open-health]').forEach(el=>{
     el.addEventListener('click', ()=> openModal({type:'view-health', id: el.getAttribute('data-open-health')}));
@@ -1425,7 +1561,7 @@ function wireEvents(){
     const name=document.getElementById('ppName').value.trim(); if(!name){alert('Add a profile name.');return;}
     const id=savePregnancyProfile.getAttribute('data-id'), existing=DB.pregnancyProfiles.find(x=>x.id===id);
     const settings={...(existing?.settings||{}),prenatalLabel:document.getElementById('ppPrenatalLabel').value.trim()||'Daily prenatal care',prenatalTime:document.getElementById('ppPrenatalTime').value||'09:00',waterGoalMl:Math.max(250,Math.min(10000,parseInt(document.getElementById('ppWaterGoalMl').value)||2000)),bottleSizeMl:Math.max(100,Math.min(3000,parseInt(document.getElementById('ppBottleSize').value)||500)),waterIntervalMin:parseInt(document.getElementById('ppWaterInterval').value)||120,waterStart:document.getElementById('ppWaterStart').value||'08:00',waterEnd:document.getElementById('ppWaterEnd').value||'20:00'};
-    const record={id:id||uid(),name,dueDate:document.getElementById('ppDueDate').value||null,createdAt:existing?.createdAt||Date.now(),settings,journal:existing?.journal||[],appointments:existing?.appointments||[],dailyChecks:existing?.dailyChecks||[],wellnessLogs:existing?.wellnessLogs||[]};
+    const record={id:id||uid(),name,dueDate:document.getElementById('ppDueDate').value||null,createdAt:existing?.createdAt||Date.now(),settings,journal:existing?.journal||[],appointments:existing?.appointments||[],dailyChecks:existing?.dailyChecks||[],wellnessLogs:existing?.wellnessLogs||[],weightLogs:existing?.weightLogs||[]};
     if(existing)Object.assign(existing,record);else DB.pregnancyProfiles.push(record);
     DB.settings.activePregnancyProfileId=record.id; saveState(); closeModal();
   });
@@ -1467,6 +1603,9 @@ function wireEvents(){
   });
   const deletePregnancyWellness=app.querySelector('[data-act="delete-pregnancy-wellness"]');
   if(deletePregnancyWellness) deletePregnancyWellness.addEventListener('click',()=>{if(!confirm('Delete this movement log?'))return;const p=activePregnancyProfile();p.wellnessLogs=p.wellnessLogs.filter(x=>x.id!==deletePregnancyWellness.getAttribute('data-id'));saveState();closeModal();});
+  const savePregnancyWeight=app.querySelector('[data-act="save-pregnancy-weight"]');
+  if(savePregnancyWeight) savePregnancyWeight.addEventListener('click',()=>{const p=activePregnancyProfile(),date=document.getElementById('pwtDate').value||todayISO(),weight=parseFloat(document.getElementById('pwtValue').value);if(!Number.isFinite(weight)||weight<1||weight>500){alert('Enter a valid weight in kilograms.');return;}const existing=(p.weightLogs||[]).find(x=>x.date===date),record={id:existing?.id||uid(),date,weightKg:Math.round(weight*10)/10,createdAt:existing?.createdAt||Date.now()};if(existing)Object.assign(existing,record);else(p.weightLogs||(p.weightLogs=[])).push(record);saveState();closeModal();});
+  app.querySelectorAll('[data-delete-pregnancy-weight]').forEach(el=>el.addEventListener('click',()=>{if(!confirm('Delete this weight entry?'))return;const p=activePregnancyProfile();p.weightLogs=p.weightLogs.filter(x=>x.id!==el.getAttribute('data-delete-pregnancy-weight'));saveState();openModal({type:'pregnancy-weight'});}));
   const enablePregnancyNotifications=app.querySelector('[data-act="enable-pregnancy-notifications"]');
   if(enablePregnancyNotifications) enablePregnancyNotifications.addEventListener('click',async()=>{
     if(!('Notification'in window)){alert('Notifications are not supported on this phone browser.');return;}
