@@ -95,12 +95,42 @@ main{flex:1; padding:0 1rem 6rem;}
 .stat-tile .n{font-family:var(--font-mono); font-size:1.25rem; font-weight:700; color:var(--accent); overflow:hidden; text-overflow:ellipsis;}
 .stat-tile .l{font-size:.62rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-top:.2rem; overflow-wrap:anywhere;}
 
-.tabbar{display:flex; gap:.4rem; margin-bottom:.9rem; background:var(--surface-2); padding:.25rem; border-radius:10px;}
+.tabbar{display:flex; gap:.3rem; margin-bottom:.9rem; background:var(--surface-2); padding:.3rem; border-radius:10px;}
 .tabbar button{
-  flex:1; border:none; background:transparent; color:var(--muted); padding:.5rem 0; border-radius:8px;
-  font-size:.82rem; font-weight:600;
+  flex:1; border:none; background:transparent; color:var(--muted); padding:.65rem .15rem; border-radius:8px;
+  font-size:.8rem; font-weight:600; min-height:2.6rem;
 }
 .tabbar button.active{background:var(--accent); color:#04211d;}
+
+/* ---- habits ---- */
+.habit-grid{display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:.8rem;}
+.habit-chip{
+  display:flex; align-items:center; gap:.4rem; padding:.55rem .75rem; border-radius:10px;
+  border:1px solid var(--border); background:var(--surface); font-size:.82rem; font-weight:600; cursor:pointer;
+  transition:transform .1s ease;
+}
+.habit-chip:active{transform:scale(.96);}
+.habit-chip.checked{background:var(--accent-dim); border-color:var(--accent); color:var(--accent);}
+.habit-chip .streak{font-family:var(--font-mono); font-size:.7rem; color:var(--amber); margin-left:.2rem;}
+
+/* ---- mini nav ---- */
+.mini-nav{display:flex; gap:.5rem; margin-top:.3rem;}
+.mini-nav a,.mini-nav div{
+  flex:1; display:flex; align-items:center; justify-content:center; gap:.35rem;
+  padding:.65rem .4rem; border-radius:10px; border:1px solid var(--border); background:var(--surface);
+  font-size:.78rem; font-weight:600; color:var(--muted); text-decoration:none; cursor:pointer;
+}
+.mini-nav div:active,.mini-nav a:active{transform:scale(.97);}
+
+/* ---- quick counter ---- */
+.quick-counter{display:flex; align-items:center; gap:.5rem;}
+.quick-counter .label{font-size:.75rem; color:var(--muted); min-width:4rem;}
+.quick-counter .val{font-family:var(--font-mono); font-size:1.1rem; font-weight:700; min-width:2.5rem; text-align:center;}
+.quick-counter button{
+  width:2.2rem; height:2.2rem; border-radius:8px; border:1px solid var(--border);
+  background:var(--surface-2); color:var(--text); font-size:1.1rem; font-weight:700;
+  display:flex; align-items:center; justify-content:center;
+}
 
 .btn{
   display:inline-flex; align-items:center; justify-content:center; gap:.4rem;
@@ -194,7 +224,7 @@ main{flex:1; padding:0 1rem 6rem;}
 const STORE_KEY = 'pulse_tracker_v1';
 const SESSION_KEY = 'pulse_active_session_v1';
 // Conservative limits keep browser storage bounded even after years of use.
-const DATA_LIMITS = {workoutSessions:500, cardioLogs:1000, activityLogs:1000, healthEntries:2000, dailyMetrics:2000, tasks:2000, workoutPlans:50, pregnancyProfiles:5};
+const DATA_LIMITS = {workoutSessions:500, cardioLogs:1000, activityLogs:1000, healthEntries:2000, dailyMetrics:2000, tasks:2000, workoutPlans:50, pregnancyProfiles:5, bodyweightLogs:2000, habitLogs:1000};
 function loadState(){
   try{
     const raw = localStorage.getItem(STORE_KEY);
@@ -207,8 +237,10 @@ function loadState(){
     healthEntries: [],
     dailyMetrics: [],
     pregnancyProfiles: [],
+    bodyweightLogs: [],
+    habitLogs: [],
     tasks: [],
-    settings: { lastWorkoutType: null, rounds: 3 }
+    settings: { lastWorkoutType: null, rounds: 3, lastExportAt: null, habits: [] }
   };
 }
 function enforceDataLimits(){
@@ -284,6 +316,9 @@ const WORKOUT_B = {
 };
 function ensureModernData(){
   if(!Array.isArray(DB.dailyMetrics)) DB.dailyMetrics=[];
+  if(!Array.isArray(DB.bodyweightLogs)) DB.bodyweightLogs=[];
+  if(!Array.isArray(DB.habitLogs)) DB.habitLogs=[];
+  if(!Array.isArray(DB.settings.habits)||!DB.settings.habits.length) DB.settings.habits=[{key:'workout',label:'Workout'},{key:'water',label:'Water 2L'},{key:'vitamins',label:'Vitamins'},{key:'stretch',label:'Stretch'}];
   if(!Array.isArray(DB.pregnancyProfiles)) DB.pregnancyProfiles=[];
   DB.pregnancyProfiles.forEach(p=>{p.journal=Array.isArray(p.journal)?p.journal:[];p.appointments=Array.isArray(p.appointments)?p.appointments:[];p.dailyChecks=Array.isArray(p.dailyChecks)?p.dailyChecks:[];p.wellnessLogs=Array.isArray(p.wellnessLogs)?p.wellnessLogs:[];p.weightLogs=Array.isArray(p.weightLogs)?p.weightLogs:[];p.settings=p.settings||{};});
   if(!Array.isArray(DB.workoutPlans) || !DB.workoutPlans.length){
@@ -313,7 +348,7 @@ const URL_PARAMS=new URLSearchParams(location.search);
 const PREGNANCY_MODE=URL_PARAMS.get('mode')==='pregnancy';
 const APP_NAME=PREGNANCY_MODE?'Sakhi':'Pulse';
 const requestedScreen=URL_PARAMS.get('screen');
-let view = { screen:PREGNANCY_MODE?'pregnancy':(['home','fitness','health','planner','data','pregnancy'].includes(requestedScreen)?requestedScreen:'home') };
+let view = { screen:PREGNANCY_MODE?'pregnancy':(['home','fitness','health','planner','data'].includes(requestedScreen)?requestedScreen:'home') };
 let session = loadSession(); // live workout session state, restored after reloads
 let modal = null;   // {type,...}
 
@@ -363,8 +398,36 @@ function sparkline(values,color='var(--accent)'){
   const nums=values.map(Number).filter(Number.isFinite);
   if(nums.length<2) return '';
   const min=Math.min(...nums), max=Math.max(...nums), range=max-min||1;
+  const latest=nums[nums.length-1];
   const points=nums.map((v,i)=>`${(i/(nums.length-1))*100},${38-((v-min)/range)*32}`).join(' ');
-  return `<svg viewBox="0 0 100 42" preserveAspectRatio="none" style="width:100%;height:4.5rem;display:block" role="img" aria-label="Recent trend"><polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
+  const lastY=38-((latest-min)/range)*32;
+  return `<div style="position:relative"><svg viewBox="0 0 100 42" preserveAspectRatio="none" style="width:calc(100% - 3rem);height:4.5rem;display:block" role="img" aria-label="Recent trend"><polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/><circle cx="100" cy="${lastY}" r="3" fill="${color}" vector-effect="non-scaling-stroke"/></svg><div style="position:absolute;right:0;top:50%;transform:translateY(-50%);font-family:var(--font-mono);font-size:.72rem;font-weight:700;color:${color};width:2.8rem;text-align:right">${latest%1===0?latest:latest.toFixed(1)}</div></div>`;
+}
+
+/* ============================= HABITS ============================= */
+function habitLogToday(){
+  return DB.habitLogs.find(x=>x.date===todayISO())||{date:todayISO(),done:{}};
+}
+function mutableHabitToday(){
+  let log=DB.habitLogs.find(x=>x.date===todayISO());
+  if(!log){log={id:uid(),date:todayISO(),done:{},createdAt:Date.now()};DB.habitLogs.push(log);}
+  return log;
+}
+function habitStreak(key){
+  const sorted=[...DB.habitLogs].filter(x=>x.done&&x.done[key]).map(x=>x.date).sort().reverse();
+  if(!sorted.length) return 0;
+  let streak=0, d=new Date(todayISO()+'T12:00:00');
+  for(let i=0;i<400;i++){
+    const iso=localISO(d);
+    if(sorted.includes(iso)) streak++;
+    else if(i>0) break;
+    d.setDate(d.getDate()-1);
+  }
+  return streak;
+}
+function backupAgeDays(){
+  if(!DB.settings.lastExportAt) return Infinity;
+  return Math.floor((Date.now()-DB.settings.lastExportAt)/86400000);
 }
 
 /* ============================= RENDER SHELL ============================= */
@@ -417,48 +480,68 @@ function backTarget(){
 
 /* ============================= HOME ============================= */
 function renderHome(){
-  const thisWeek = DB.workoutSessions.filter(s=>s.date>=weekAgo()).length;
-  const totalSessions = DB.workoutSessions.length;
   const openTasks = DB.tasks.filter(t=>t.status==='open').length;
   const overdueTasks = DB.tasks.filter(isOverdue).length;
+  const dueToday = DB.tasks.filter(t=>t.status==='open' && t.date===todayISO()).length;
+  const workedOutToday = DB.workoutSessions.some(s=>s.date===todayISO());
+  const bwToday = DB.bodyweightLogs.find(x=>x.date===todayISO());
+  const hToday = habitLogToday();
+  const habitsTotal = DB.settings.habits.length;
+  const habitsDone = DB.settings.habits.filter(h=>hToday.done[h.key]).length;
+  const latestMetric = [...DB.dailyMetrics].sort((a,b)=>(b.date||'').localeCompare(a.date||''))[0];
+  const backupDays = backupAgeDays();
+
   return `
-  ${session?`<button class="btn primary" data-act="resume-session" style="margin-bottom:1rem;">Resume Workout ${session.type}</button>`:''}
-  <div class="stat-row" style="margin-bottom:1rem;">
-    <div class="stat-tile"><div class="n">${thisWeek}</div><div class="l">Sessions/wk</div></div>
-    <div class="stat-tile"><div class="n">${totalSessions}</div><div class="l">Total sessions</div></div>
-    <div class="stat-tile"><div class="n" style="color:${overdueTasks?'var(--red)':'var(--accent)'}">${openTasks}</div><div class="l">Open tasks</div></div>
+  ${session?`<button class="btn primary" data-act="resume-session" style="margin-bottom:.8rem;">Resume Workout ${esc(session.planName||session.type)}</button>`:''}
+
+  ${backupDays>=14?`<div class="card" style="border-color:#4a3a1f;background:linear-gradient(135deg,#2a2210,var(--surface))"><div style="display:flex;align-items:center;gap:.6rem"><div style="font-size:1.2rem">⚠️</div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:.85rem">Backup overdue</div><div style="font-size:.75rem;color:var(--amber)">${backupDays===Infinity?'Never backed up':'Last backup '+backupDays+' days ago'}</div></div><button class="btn" data-nav="data" style="width:auto;padding:.45rem .8rem;font-size:.78rem">Backup now</button></div></div>`:''}
+
+  <div class="section-label" style="margin-top:0">Today</div>
+
+  <div class="card">
+    <div class="habit-grid">
+      ${DB.settings.habits.map(h=>{const done=!!hToday.done[h.key],s=habitStreak(h.key);return `<div class="habit-chip ${done?'checked':''}" data-habit-toggle="${h.key}">${done?'✓ ':''}${esc(h.label)}${s>=2?`<span class="streak">${s}d</span>`:''}</div>`;}).join('')}
+    </div>
+    <div style="font-size:.72rem;color:var(--muted)">${habitsDone}/${habitsTotal} done today${habitsDone===habitsTotal&&habitsTotal?' — nice work':''}</div>
   </div>
+
+  <div class="stat-row" style="margin-bottom:.8rem;">
+    <div class="stat-tile"><div class="n" style="color:${workedOutToday?'var(--accent)':'var(--muted)'}">${workedOutToday?'✓':'—'}</div><div class="l">Workout</div></div>
+    <div class="stat-tile"><div class="n" style="color:var(--accent)">${bwToday?(bwToday.pushups||0)+(bwToday.pullups||0)+(bwToday.invertedPushups||0):0}</div><div class="l">BW reps</div></div>
+    <div class="stat-tile"><div class="n" style="color:${overdueTasks?'var(--red)':dueToday?'var(--amber)':'var(--accent)'}">${dueToday||overdueTasks||openTasks}</div><div class="l">${overdueTasks?'Overdue':dueToday?'Due today':'Open'}</div></div>
+    <div class="stat-tile"><div class="n">${latestMetric?.steps?Math.round(latestMetric.steps/1000)+'k':'—'}</div><div class="l">Steps</div></div>
+  </div>
+
+  <div class="section-label">Quick log</div>
+  <div class="card" id="quickBwCard">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem"><div style="font-weight:600;font-size:.88rem">Bodyweight reps</div><div style="font-size:.72rem;color:var(--muted)">${fmtDate(todayISO())}</div></div>
+    <div class="quick-counter" style="margin-bottom:.5rem"><div class="label" style="color:var(--accent)">Push-ups</div><button data-quick-bw="pushups:-1">−</button><div class="val" style="color:var(--accent)">${bwToday?.pushups||0}</div><button data-quick-bw="pushups:1">+</button><button data-quick-bw="pushups:5" style="font-size:.75rem;width:auto;padding:0 .5rem">+5</button></div>
+    <div class="quick-counter" style="margin-bottom:.5rem"><div class="label" style="color:#9db4ff">Pull-ups</div><button data-quick-bw="pullups:-1">−</button><div class="val" style="color:#9db4ff">${bwToday?.pullups||0}</div><button data-quick-bw="pullups:1">+</button><button data-quick-bw="pullups:5" style="font-size:.75rem;width:auto;padding:0 .5rem">+5</button></div>
+    <div class="quick-counter"><div class="label" style="color:var(--amber)">Inverted</div><button data-quick-bw="invertedPushups:-1">−</button><div class="val" style="color:var(--amber)">${bwToday?.invertedPushups||0}</div><button data-quick-bw="invertedPushups:1">+</button><button data-quick-bw="invertedPushups:5" style="font-size:.75rem;width:auto;padding:0 .5rem">+5</button></div>
+  </div>
+
   <div class="hero-tile pressable" data-nav="fitness">
     <div class="ico" style="background:var(--accent-dim); color:var(--accent);">🏋️</div>
-    <div class="body"><div class="t">Fitness</div><div class="s">Workouts · Cardio · Activities</div></div>
-    <div class="chev">›</div>
-  </div>
-  <div class="hero-tile pressable" data-nav="health">
-    <div class="ico" style="background:#3a2540; color:#d9a8f0;">🩺</div>
-    <div class="body"><div class="t">Health</div><div class="s">Vitals · Meds · Appointments · Notes</div></div>
-    <div class="chev">›</div>
-  </div>
-  <div class="hero-tile pressable" data-nav="pregnancy">
-    <div class="ico" style="background:#49283d; color:#ffb8dc;">🌸</div>
-    <div class="body"><div class="t">Pregnancy Companion</div><div class="s">Journal · Daily care · Water · Appointments</div></div>
+    <div class="body"><div class="t">Fitness</div><div class="s">Workouts · Bodyweight · Cardio</div></div>
     <div class="chev">›</div>
   </div>
   <div class="hero-tile pressable" data-nav="planner">
     <div class="ico" style="background:#3a3320; color:var(--amber);">🗓️</div>
-    <div class="body"><div class="t">Day Planner</div><div class="s">${overdueTasks?overdueTasks+' overdue · ':''}${openTasks} open task${openTasks===1?'':'s'}</div></div>
+    <div class="body"><div class="t">Planner</div><div class="s">${overdueTasks?overdueTasks+' overdue · ':''}${openTasks} open task${openTasks===1?'':'s'}</div></div>
     <div class="chev">›</div>
   </div>
-  <div class="hero-tile pressable" data-nav="data">
-    <div class="ico" style="background:#24354a; color:#9fc7ff;">💾</div>
-    <div class="body"><div class="t">Data & Backup</div><div class="s">Export or restore your personal records</div></div>
-    <div class="chev">›</div>
+
+  <div class="mini-nav">
+    <div data-nav="health">🩺 Health</div>
+    <div data-nav="data">💾 Data</div>
+    <a href="./sakhi/" style="color:inherit">🌸 Sakhi</a>
   </div>
   `;
 }
 
 /* ============================= DATA ============================= */
 function renderData(){
-  const counts = [DB.workoutSessions.length, DB.cardioLogs.length, DB.activityLogs.length, DB.healthEntries.length, DB.dailyMetrics.length, DB.tasks.length, DB.pregnancyProfiles.reduce((n,p)=>n+(p.journal?.length||0)+(p.appointments?.length||0)+(p.dailyChecks?.length||0)+(p.wellnessLogs?.length||0)+(p.weightLogs?.length||0),0)];
+  const counts = [DB.workoutSessions.length, DB.cardioLogs.length, DB.activityLogs.length, DB.healthEntries.length, DB.dailyMetrics.length, DB.bodyweightLogs.length, DB.tasks.length, DB.pregnancyProfiles.reduce((n,p)=>n+(p.journal?.length||0)+(p.appointments?.length||0)+(p.dailyChecks?.length||0)+(p.wellnessLogs?.length||0)+(p.weightLogs?.length||0),0)];
   const storageKB = Math.ceil(new Blob([JSON.stringify(DB)]).size/1024);
   return `
   <div class="card">
@@ -704,44 +787,56 @@ async function checkPregnancyReminders(){
 
 /* ============================= FITNESS ============================= */
 let fitnessTab = 'workout';
+const VALID_FIT_TABS = new Set(['workout','bodyweight','cardio','activities']);
 function renderFitness(){
-  const tabs = ['workout','plans','cardio','activities','progress'];
-  const labels = {workout:'Start', plans:'Plans', cardio:'Cardio', activities:'Activity',progress:'Progress'};
+  const tabs = ['workout','bodyweight','cardio','activities'];
+  const labels = {workout:'Workout', bodyweight:'BW', cardio:'Cardio', activities:'Activity'};
   return `
   <div class="tabbar">
     ${tabs.map(t=>`<button data-fit-tab="${t}" class="${fitnessTab===t?'active':''}">${labels[t]}</button>`).join('')}
   </div>
   ${fitnessTab==='workout' ? renderWorkoutTab() : ''}
-  ${fitnessTab==='plans' ? renderPlansTab() : ''}
+  ${fitnessTab==='bodyweight' ? renderBodyweightTab() : ''}
   ${fitnessTab==='cardio' ? renderCardioTab() : ''}
   ${fitnessTab==='activities' ? renderActivitiesTab() : ''}
-  ${fitnessTab==='progress' ? renderFitnessProgress() : ''}
   `;
 }
 
 function renderWorkoutTab(){
   const next = nextWorkoutType();
   const recent = [...DB.workoutSessions].sort((a,b)=>b.startedAt-a.startedAt).slice(0,8);
+  const weekSessions=DB.workoutSessions.filter(s=>s.date>=weekAgo()).length;
+  const cardioMin=DB.cardioLogs.filter(x=>x.date>=weekAgo()).reduce((n,x)=>n+(x.duration||0),0);
+  const weights={};
+  [...DB.workoutSessions].sort((a,b)=>b.startedAt-a.startedAt).forEach(s=>(s.stationLogs||[]).forEach(x=>{if(weights[x.name]==null&&typeof x.weight==='number')weights[x.name]=x.weight;}));
+
   return `
-  <div class="card">
-    <div style="font-size:.78rem; color:var(--muted); margin-bottom:.3rem;">Up next</div>
-    ${next?`<div style="font-size:1.3rem; font-weight:700; margin-bottom:.2rem;">${esc(next.name)}</div>
-    <div style="font-size:.8rem; color:var(--muted); margin-bottom:.9rem;">${next.stations.length} exercises + ${esc(next.core.name)} · plans rotate automatically</div>
-    <div class="field"><label>Workout plan</label><select id="planSelect">${DB.workoutPlans.filter(p=>p.stations.length).map(p=>`<option value="${p.id}" ${p.id===next.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>
-    <div class="field" style="margin-bottom:.6rem;">
-      <label>Rounds</label>
-      <select id="roundsSelect">
-        ${[1,2,3,4].map(n=>`<option value="${n}" ${n===DB.settings.rounds?'selected':''}>${n} round${n>1?'s':''}</option>`).join('')}
-      </select>
-    </div>
-    <button class="btn primary" data-act="start-session">Start workout</button>`:`<div class="empty"><p>Create a workout plan before starting.</p></div><button class="btn primary" data-fit-tab="plans">Create a plan</button>`}
+  <div class="stat-row" style="margin-bottom:.8rem;">
+    <div class="stat-tile"><div class="n">${weekSessions}</div><div class="l">Workouts / 7d</div></div>
+    <div class="stat-tile"><div class="n">${Math.round(cardioMin)}</div><div class="l">Cardio min / 7d</div></div>
+    <div class="stat-tile"><div class="n">${DB.workoutSessions.length}</div><div class="l">Total</div></div>
   </div>
+  <div class="card">
+    ${next?`<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem"><div style="font-size:1.15rem;font-weight:700">${esc(next.name)}</div><div style="font-size:.72rem;color:var(--muted)">${next.stations.length} exercises</div></div>
+    <div class="btn-row" style="margin-bottom:.6rem">
+      <div class="field" style="flex:2;margin:0"><select id="planSelect" style="padding:.5rem .6rem">${DB.workoutPlans.filter(p=>p.stations.length).map(p=>`<option value="${p.id}" ${p.id===next.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="field" style="flex:1;margin:0"><select id="roundsSelect" style="padding:.5rem .6rem">${[1,2,3,4].map(n=>`<option value="${n}" ${n===DB.settings.rounds?'selected':''}>${n}R</option>`).join('')}</select></div>
+    </div>
+    <button class="btn primary" data-act="start-session">Start workout</button>`:`<div class="empty"><p>Create a workout plan to start.</p></div>`}
+  </div>
+
+  <div class="section-label">Plans</div>
+  <button class="btn" data-act="add-plan" style="margin-bottom:.6rem;">+ Create plan</button>
+  ${DB.workoutPlans.map(p=>`<div class="card" data-open-plan="${p.id}" style="margin-bottom:.4rem;padding:.7rem 1rem"><div style="display:flex;align-items:center;justify-content:space-between"><div><span style="font-weight:600;font-size:.88rem">${esc(p.name)}</span><span style="font-size:.75rem;color:var(--muted);margin-left:.5rem">${p.stations.length} ex</span></div><div class="chev">›</div></div></div>`).join('')}
+
+  ${Object.keys(weights).length?`<div class="section-label">Latest weights</div><div class="card">${Object.entries(weights).slice(0,10).map(([name,w])=>`<div class="list-row" style="padding:.5rem 0"><div class="main"><div style="font-size:.82rem;font-weight:600">${esc(name)}</div></div><div class="val" style="font-size:.85rem">${w} kg</div></div>`).join('')}</div>`:''}
+
   <div class="section-label">History</div>
   ${recent.length===0 ? emptyBlock('💪','No sessions yet','Start your first circuit above.') : recent.map(s=>`
-    <div class="card list-row" style="margin-bottom:.5rem;">
+    <div class="card list-row" style="margin-bottom:.4rem;">
       <div class="main">
         <div class="title">${esc(s.planName||('Workout '+s.type))} ${s.partial?'· partial':''}</div>
-        <div class="meta">${fmtDate(s.date)} · ${s.rounds} round${s.rounds>1?'s':''} · ${Math.round(s.durationSec/60)} min${s.rpe?' · RPE '+s.rpe:''}</div>
+        <div class="meta">${fmtDate(s.date)} · ${s.rounds}R · ${Math.round(s.durationSec/60)} min${s.rpe?' · RPE '+s.rpe:''}</div>
       </div>
       <div class="val">${s.stationLogs ? s.stationLogs.filter(x=>x.weight!=null).length : 0}/${s.stationLogs?s.stationLogs.length:0}</div>
     </div>
@@ -749,23 +844,51 @@ function renderWorkoutTab(){
   `;
 }
 
-function renderPlansTab(){
-  return `<button class="btn primary" data-act="add-plan" style="margin-bottom:1rem;">+ Create workout plan</button>
-  ${DB.workoutPlans.length===0?emptyBlock('🏋️','No workout plans','Create a plan and add your exercises.'):DB.workoutPlans.map(p=>`
-    <div class="card" data-open-plan="${p.id}">
-      <div class="list-row" style="border:none;padding:0"><div class="main"><div class="title">${esc(p.name)}</div><div class="meta">${p.stations.length} exercises · Core: ${esc(p.core?.name||'None')}</div></div><div class="chev">›</div></div>
-    </div>`).join('')}`;
+function renderBodyweightTab(){
+  const logs=[...DB.bodyweightLogs].sort((a,b)=>b.date.localeCompare(a.date));
+  const today=logs.find(x=>x.date===todayISO());
+  const last7=logs.filter(x=>x.date>=weekAgo());
+  const pushupTotal=last7.reduce((n,x)=>n+(x.pushups||0),0);
+  const pullupTotal=last7.reduce((n,x)=>n+(x.pullups||0),0);
+  const invertedTotal=last7.reduce((n,x)=>n+(x.invertedPushups||0),0);
+  const recent=logs.slice(0,30);
+  const trendData=recent.slice(0,14).reverse();
+  return `
+  <div class="card" style="text-align:center; padding:1.1rem;">
+    <div style="font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:.6rem;">Today</div>
+    <div class="stat-row">
+      <div class="stat-tile"><div class="n" style="color:var(--accent)">${today?.pushups||0}</div><div class="l">Push-ups</div></div>
+      <div class="stat-tile"><div class="n" style="color:#9db4ff">${today?.pullups||0}</div><div class="l">Pull-ups</div></div>
+      <div class="stat-tile"><div class="n" style="color:var(--amber)">${today?.invertedPushups||0}</div><div class="l">Inverted</div></div>
+    </div>
+    <button class="btn primary" data-act="log-bodyweight" style="margin-top:.9rem;">${today?'Update today':'+ Log today'}</button>
+  </div>
+  <div class="section-label">Last 7 days</div>
+  <div class="stat-row" style="margin-bottom:.7rem;">
+    <div class="stat-tile"><div class="n" style="color:var(--accent)">${pushupTotal}</div><div class="l">Push-ups</div></div>
+    <div class="stat-tile"><div class="n" style="color:#9db4ff">${pullupTotal}</div><div class="l">Pull-ups</div></div>
+    <div class="stat-tile"><div class="n" style="color:var(--amber)">${invertedTotal}</div><div class="l">Inverted</div></div>
+  </div>
+  ${trendData.length>1?`<div class="section-label">Push-up trend</div>${sparkline(trendData.map(x=>x.pushups||0),'var(--accent)')}
+  <div class="section-label">Pull-up trend</div>${sparkline(trendData.map(x=>x.pullups||0),'#9db4ff')}
+  <div class="section-label">Inverted push-up trend</div>${sparkline(trendData.map(x=>x.invertedPushups||0),'var(--amber)')}`:''}
+  <div class="section-label">History</div>
+  ${recent.length?recent.map(x=>`<div class="card list-row" style="margin-bottom:.4rem;" data-open-bodyweight="${x.id}">
+    <div class="main"><div class="title">${fmtDate(x.date)}</div><div class="meta"><span style="color:var(--accent)">${x.pushups||0}</span> push · <span style="color:#9db4ff">${x.pullups||0}</span> pull · <span style="color:var(--amber)">${x.invertedPushups||0}</span> inv</div></div>
+    <div class="val">${(x.pushups||0)+(x.pullups||0)+(x.invertedPushups||0)}</div></div>`).join(''):emptyBlock('💪','No entries yet','Start logging your daily push-ups, pull-ups, and inverted push-ups.')}`;
 }
 
-function renderFitnessProgress(){
-  const recent=DB.workoutSessions.filter(s=>s.date>=weekAgo()).length;
-  const cardioMin=DB.cardioLogs.filter(x=>x.date>=weekAgo()).reduce((n,x)=>n+(x.duration||0),0);
-  const totalMin=DB.workoutSessions.reduce((n,x)=>n+Math.round((x.durationSec||0)/60),0);
-  const weights={};
-  [...DB.workoutSessions].sort((a,b)=>b.startedAt-a.startedAt).forEach(s=>(s.stationLogs||[]).forEach(x=>{if(weights[x.name]==null&&typeof x.weight==='number')weights[x.name]=x.weight;}));
-  return `<div class="stat-row"><div class="stat-tile"><div class="n">${recent}</div><div class="l">Workouts / 7d</div></div><div class="stat-tile"><div class="n">${Math.round(cardioMin)}</div><div class="l">Cardio min / 7d</div></div><div class="stat-tile"><div class="n">${totalMin}</div><div class="l">Total min</div></div></div>
-  <div class="section-label">Latest working weights</div>
-  <div class="card">${Object.keys(weights).length?Object.entries(weights).slice(0,20).map(([name,w])=>`<div class="list-row"><div class="main"><div class="title">${esc(name)}</div></div><div class="val">${w} kg</div></div>`).join(''):`<div class="empty"><p>Complete weighted exercises to see progress.</p></div>`}</div>`;
+function renderBodyweightModal(){
+  const x=modal.id?DB.bodyweightLogs.find(v=>v.id===modal.id):DB.bodyweightLogs.find(v=>v.date===todayISO());
+  return `<h2>${x?'Edit':'Log'} bodyweight exercises</h2>
+    <div class="field"><label>Date</label><input type="date" id="bwDate" value="${x?.date||todayISO()}"></div>
+    <div class="field"><label>Push-ups</label><input type="number" id="bwPushups" inputmode="numeric" min="0" max="9999" value="${x?.pushups??''}"></div>
+    <div class="field"><label>Pull-ups</label><input type="number" id="bwPullups" inputmode="numeric" min="0" max="9999" value="${x?.pullups??''}"></div>
+    <div class="field"><label>Inverted push-ups</label><input type="number" id="bwInverted" inputmode="numeric" min="0" max="9999" value="${x?.invertedPushups??''}"></div>
+    <div class="field"><label>Notes</label><textarea id="bwNotes" maxlength="500">${esc(x?.notes||'')}</textarea></div>
+    <button class="btn primary" data-act="save-bodyweight" data-id="${x?.id||''}">Save</button>
+    ${x?`<div style="height:.5rem"></div><button class="btn danger" data-delete-record="bodyweight" data-id="${x.id}">Delete</button>`:''}
+    <div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Cancel</button>`;
 }
 
 function renderCardioTab(){
@@ -1041,16 +1164,16 @@ function renderMetricSummary(){
 
 /* ============================= PLANNER ============================= */
 let plannerFilter = 'open';
+let plannerView = 'tasks';
 function renderPlanner(){
   const overdue = DB.tasks.filter(isOverdue).length;
   const dueToday = DB.tasks.filter(t=>t.status==='open' && t.date===todayISO()).length;
   const openCt = DB.tasks.filter(t=>t.status==='open').length;
-  let list = DB.tasks;
-  if(plannerFilter!=='all') list = list.filter(t=>t.status===plannerFilter);
-  list = [...list].sort((a,b)=> (a.date||'9999').localeCompare(b.date||'9999'));
   return `
-  <button class="btn primary" data-act="add-task" style="margin-bottom:1rem;">+ Add task</button>
-  <div class="stat-row" style="margin-bottom:1rem;">
+  <div class="tabbar"><button data-planner-view="tasks" class="${plannerView==='tasks'?'active':''}">Tasks</button><button data-planner-view="habits" class="${plannerView==='habits'?'active':''}">Habits</button></div>
+  ${plannerView==='habits'?renderHabitsView():`
+  <button class="btn primary" data-act="add-task" style="margin-bottom:.8rem;">+ Add task</button>
+  <div class="stat-row" style="margin-bottom:.8rem;">
     <div class="stat-tile pressable" data-plan-filter="open" style="cursor:pointer;"><div class="n" style="color:${overdue?'var(--red)':'var(--accent)'}">${overdue}</div><div class="l">Overdue</div></div>
     <div class="stat-tile pressable" data-plan-filter="open" style="cursor:pointer;"><div class="n">${dueToday}</div><div class="l">Due today</div></div>
     <div class="stat-tile pressable" data-plan-filter="open" style="cursor:pointer;"><div class="n">${openCt}</div><div class="l">Open</div></div>
@@ -1058,17 +1181,31 @@ function renderPlanner(){
   <div class="tabbar" style="flex-wrap:wrap;">
     ${['open','postponed','completed','cancelled','all'].map(f=>`<button data-plan-filter="${f}" class="${plannerFilter===f?'active':''}">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}
   </div>
-  ${list.length===0 ? emptyBlock('🗓️','Nothing here','Add a task to get started.') : list.map(t=>`
-    <div class="card" data-open-task="${t.id}">
-      <div class="list-row" style="border:none; padding:0;">
-        <div class="main">
-          <div class="title">${esc(t.title)} ${isOverdue(t)?'<span class="pill overdue">Overdue</span>':`<span class="pill ${t.status}">${t.status}</span>`}</div>
-          <div class="meta">${t.date?fmtDate(t.date):'No date'}${t.time?' · '+t.time:''}${t.location?' · '+esc(t.location):''}</div>
-        </div>
-      </div>
+  ${(()=>{let list=DB.tasks;if(plannerFilter!=='all')list=list.filter(t=>t.status===plannerFilter);list=[...list].sort((a,b)=>(a.date||'9999').localeCompare(b.date||'9999'));return list.length===0?emptyBlock('🗓️','Nothing here','Add a task to get started.'):list.map(t=>`<div class="card" data-open-task="${t.id}"><div class="list-row" style="border:none;padding:0;"><div class="main"><div class="title">${esc(t.title)} ${isOverdue(t)?'<span class="pill overdue">Overdue</span>':`<span class="pill ${t.status}">${t.status}</span>`}</div><div class="meta">${t.date?fmtDate(t.date):'No date'}${t.time?' · '+t.time:''}${t.location?' · '+esc(t.location):''}</div></div></div></div>`).join('');})()}
+  `}`;
+}
+
+function renderHabitsView(){
+  const hToday=habitLogToday();
+  const last14=[...DB.habitLogs].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,14).reverse();
+  return `
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem"><div style="font-weight:600">Today's habits</div><button class="btn ghost" data-act="edit-habits" style="width:auto;padding:.3rem .6rem;font-size:.72rem">Edit list</button></div>
+    <div class="habit-grid">
+      ${DB.settings.habits.map(h=>{const done=!!hToday.done[h.key],s=habitStreak(h.key);return `<div class="habit-chip ${done?'checked':''}" data-habit-toggle="${h.key}">${done?'✓ ':''}${esc(h.label)}${s>=2?`<span class="streak">${s}d</span>`:''}</div>`;}).join('')}
     </div>
-  `).join('')}
-  `;
+  </div>
+  <div class="section-label">Streaks</div>
+  <div class="card">${DB.settings.habits.map(h=>{const s=habitStreak(h.key);return `<div class="list-row" style="padding:.5rem 0"><div class="main"><div style="font-size:.85rem;font-weight:600">${esc(h.label)}</div></div><div class="val" style="color:${s>=7?'var(--accent)':s>=3?'var(--amber)':'var(--muted)'}">${s}d</div></div>`;}).join('')}</div>
+  ${last14.length>1?`<div class="section-label">Completion rate (14 days)</div>${DB.settings.habits.map(h=>{const vals=last14.map(l=>l.done&&l.done[h.key]?1:0);return `<div style="font-size:.75rem;color:var(--muted);margin-bottom:.15rem">${esc(h.label)}</div>${sparkline(vals,'var(--accent)')}`;}).join('')}`:''}`;
+}
+
+function renderHabitsModal(){
+  return `<h2>Edit daily habits</h2>
+    <div class="field"><label>One habit per line</label><textarea id="habitList" style="min-height:8rem">${DB.settings.habits.map(h=>h.label).join('\n')}</textarea></div>
+    <div style="font-size:.72rem;color:var(--muted);margin-bottom:.8rem">Existing streak data is preserved when renaming. Removing a habit hides it from today but keeps its history.</div>
+    <button class="btn primary" data-act="save-habits">Save habits</button>
+    <div style="height:.5rem"></div><button class="btn ghost" data-act="close-modal">Cancel</button>`;
 }
 
 /* ============================= MODALS ============================= */
@@ -1084,6 +1221,8 @@ function renderModal(){
   else if(m.type==='view-task') inner = renderTaskDetailModal();
   else if(m.type==='edit-plan') inner = renderPlanModal();
   else if(m.type==='add-metric') inner = renderMetricModal();
+  else if(m.type==='bodyweight') inner = renderBodyweightModal();
+  else if(m.type==='edit-habits') inner = renderHabitsModal();
   else if(m.type==='pregnancy-profile') inner = renderPregnancyProfileModal();
   else if(m.type==='pregnancy-journal') inner = renderPregnancyJournalModal();
   else if(m.type==='pregnancy-appointment') inner = renderPregnancyAppointmentModal();
@@ -1342,7 +1481,7 @@ function wireEvents(){
   if(backBtn) backBtn.addEventListener('click', ()=> go(backTarget()));
 
   app.querySelectorAll('[data-fit-tab]').forEach(el=>{
-    el.addEventListener('click', ()=>{ fitnessTab = el.getAttribute('data-fit-tab'); render(); });
+    el.addEventListener('click', ()=>{ const t=el.getAttribute('data-fit-tab'); fitnessTab=VALID_FIT_TABS.has(t)?t:'workout'; render(); });
   });
   app.querySelectorAll('[data-health-cat]').forEach(el=>{
     el.addEventListener('click', ()=>{ healthCategory = el.getAttribute('data-health-cat'); render(); });
@@ -1350,6 +1489,25 @@ function wireEvents(){
   app.querySelectorAll('[data-plan-filter]').forEach(el=>{
     el.addEventListener('click', ()=>{ plannerFilter = el.getAttribute('data-plan-filter'); render(); });
   });
+  app.querySelectorAll('[data-planner-view]').forEach(el=>{
+    el.addEventListener('click', ()=>{ plannerView = el.getAttribute('data-planner-view'); render(); });
+  });
+
+  // habit toggles
+  app.querySelectorAll('[data-habit-toggle]').forEach(el=>el.addEventListener('click',()=>{
+    const key=el.getAttribute('data-habit-toggle'), log=mutableHabitToday();
+    log.done[key]=!log.done[key];
+    saveState(); render();
+  }));
+
+  // quick BW counters on home
+  app.querySelectorAll('[data-quick-bw]').forEach(el=>el.addEventListener('click',()=>{
+    const [field,delta]=el.getAttribute('data-quick-bw').split(':');
+    let entry=DB.bodyweightLogs.find(x=>x.date===todayISO());
+    if(!entry){entry={id:uid(),date:todayISO(),pushups:0,pullups:0,invertedPushups:0,notes:'',createdAt:Date.now()};DB.bodyweightLogs.push(entry);}
+    entry[field]=Math.max(0,Math.min(9999,(entry[field]||0)+parseInt(delta)));
+    saveState(); render();
+  }));
   app.querySelectorAll('[data-preg-tab]').forEach(el=>el.addEventListener('click',()=>{pregnancyTab=el.getAttribute('data-preg-tab');render();}));
   const pregnancyProfileSelect=app.querySelector('#pregnancyProfileSelect');
   if(pregnancyProfileSelect) pregnancyProfileSelect.addEventListener('change',()=>{DB.settings.activePregnancyProfileId=pregnancyProfileSelect.value;saveState();render();});
@@ -1364,6 +1522,16 @@ function wireEvents(){
   app.querySelectorAll('[data-act="add-plan"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'edit-plan'})));
   app.querySelectorAll('[data-act="add-metric"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'add-metric'})));
   app.querySelectorAll('[data-act="scan-health"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'add-metric',scan:true})));
+  app.querySelectorAll('[data-act="log-bodyweight"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'bodyweight'})));
+  app.querySelectorAll('[data-open-bodyweight]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'bodyweight',id:el.getAttribute('data-open-bodyweight')})));
+  app.querySelectorAll('[data-act="edit-habits"]').forEach(el=>el.addEventListener('click', ()=>openModal({type:'edit-habits'})));
+  const saveHabits=app.querySelector('[data-act="save-habits"]');
+  if(saveHabits) saveHabits.addEventListener('click',()=>{
+    const lines=document.getElementById('habitList').value.split('\n').map(x=>x.trim()).filter(Boolean).slice(0,12);
+    DB.settings.habits=lines.map(label=>{const key=label.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');return{key:key||uid(),label};});
+    saveState(); closeModal();
+  });
+
   app.querySelectorAll('[data-act="add-pregnancy-profile"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-profile'})));
   app.querySelectorAll('[data-act="edit-pregnancy-profile"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-profile',id:activePregnancyProfile()?.id})));
   app.querySelectorAll('[data-act="add-pregnancy-journal"]').forEach(el=>el.addEventListener('click',()=>openModal({type:'pregnancy-journal'})));
@@ -1510,7 +1678,7 @@ function wireEvents(){
 
   app.querySelectorAll('[data-delete-record]').forEach(el=>el.addEventListener('click', ()=>{
     if(!confirm('Delete this record? This cannot be undone.')) return;
-    const keys={cardio:'cardioLogs',activity:'activityLogs',metric:'dailyMetrics'};
+    const keys={cardio:'cardioLogs',activity:'activityLogs',metric:'dailyMetrics',bodyweight:'bodyweightLogs'};
     const key=keys[el.getAttribute('data-delete-record')];
     if(!key) return;
     DB[key] = DB[key].filter(x=>x.id!==el.getAttribute('data-id'));
@@ -1548,6 +1716,17 @@ function wireEvents(){
     if(existing) Object.assign(existing,record); else DB.dailyMetrics.push(record);
     saveState(); closeModal();
   });
+  const saveBodyweight=app.querySelector('[data-act="save-bodyweight"]');
+  if(saveBodyweight) saveBodyweight.addEventListener('click', ()=>{
+    const date=document.getElementById('bwDate').value||todayISO();
+    const id=saveBodyweight.getAttribute('data-id');
+    const existing=DB.bodyweightLogs.find(x=>x.id===id)||DB.bodyweightLogs.find(x=>x.date===date);
+    const val=elId=>{const raw=document.getElementById(elId).value;return raw===''?0:Math.max(0,Math.min(9999,parseInt(raw)||0))};
+    const record={id:existing?.id||uid(),date,pushups:val('bwPushups'),pullups:val('bwPullups'),invertedPushups:val('bwInverted'),notes:document.getElementById('bwNotes').value.trim(),createdAt:existing?.createdAt||Date.now()};
+    if(existing) Object.assign(existing,record); else DB.bodyweightLogs.push(record);
+    saveState(); closeModal();
+  });
+
   const runOcr=app.querySelector('[data-act="run-ocr"]');
   if(runOcr) runOcr.addEventListener('click', async ()=>{
     const file=document.getElementById('metricImage').files[0]; const status=document.getElementById('ocrStatus');
@@ -1627,6 +1806,7 @@ function wireEvents(){
 
   const exportBtn = app.querySelector('[data-act="export-data"]');
   if(exportBtn) exportBtn.addEventListener('click', ()=>{
+    DB.settings.lastExportAt=Date.now(); saveState();
     const payload = {app:'Pulse', version:1, exportedAt:new Date().toISOString(), data:DB};
     const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
     const url = URL.createObjectURL(blob);
